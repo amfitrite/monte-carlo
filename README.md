@@ -33,10 +33,16 @@ Inspired by Jake Schincariol's `trader-timemachine` from [day-trader-skill](http
      - **Conservative SL First (Versi Asli / Baseline):** Mempertahankan logika orisinal di mana collision selalu dianggap terkena Stop Loss terlebih dahulu.
      - **50:50 Balanced Coin Flip:** Uji Bernoulli seimbang 50% TP vs 50% SL.
    - **Dynamic Horizon Scaling:** Normalisasi horizon waktu dinamis yang mengenali interval bar aktual (M1 vs M5) secara presisi, tanpa hardcode 5 menit.
+   - **Seasonality Filter (Day-of-Week Aware):** Opsi filter hari dalam seminggu (Senin s/d Jumat) untuk membedakan karakteristik volatilitas harian emas.
+7. **💾 Auto-Save Settings Persistence**:
+   - Seluruh preferensi pengguna (mode, data source, timeframe, horizon, replays, spread buffer, pilihan metodologi statistik, hingga level angka manual) **otomatis tersimpan saat aplikasi ditutup**.
+   - Saat aplikasi dibuka kembali, pengaturan terakhir langsung terisi otomatis tanpa perlu disetel ulang dari nol.
 
 ---
 
 ## 🌟 Fitur & Peningkatan Mutakhir (Merged & Verified)
+* **📅 Seasonality Filter Support (`explain-accuracy`)**:
+  - Filter hari dalam seminggu (`seasonality=True/False`) untuk memisahkan pool slot candle sesuai hari transaksi (Senin s/d Jumat).
 * **⚡ Batching NumPy Percentile Calculations (`bolt`)**:
   - Menggabungkan kalkulasi 5 persentil fan chart `[5, 25, 50, 75, 95]` ke dalam satu panggilan batch array terpadu.
   - Memangkas overhead perpindahan *Python ↔ C runtime*, menghasilkan akselerasi kecepatan komputasi hingga **~70% lebih cepat** tanpa mengubah output matematika/probabilitas (100% konsisten).

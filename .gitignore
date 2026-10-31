@@ -3,8 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Market data caches (auto-generated on run)
+# Market data caches & user settings (auto-generated on run)
 data_cache*.json
+app_settings.json
 
 # Virtual environment
 venv/

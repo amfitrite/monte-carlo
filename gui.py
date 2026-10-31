@@ -13,6 +13,7 @@ import sys
 import re
 import ctypes
 import threading
+import json
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -40,6 +41,8 @@ GREEN = "#10b981"
 RED = "#ef4444"
 BLUE = "#38bdf8"
 CYAN = "#06b6d4"
+
+SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_settings.json")
 
 HORIZON_PRESETS_M5 = [
     ("30 Menit (6 bars M5)", 6),
@@ -115,6 +118,12 @@ class TimeMachineProGUI:
         self._build_title_bar()
         self._build_header_toolbar()
         self._build_main_body()
+
+        # Load saved settings if any
+        self._load_settings()
+
+        # Bind close protocol on root window as well
+        self.root.protocol("WM_DELETE_WINDOW", self._close_window)
 
         # Initial background data fetch
         threading.Thread(target=self._initial_load_data, daemon=True).start()
@@ -206,6 +215,7 @@ class TimeMachineProGUI:
             self.is_maximized = False
 
     def _close_window(self):
+        self._save_settings()
         self.root.destroy()
 
     # ========================== HEADER TOOLBAR ==========================
@@ -975,6 +985,96 @@ class TimeMachineProGUI:
                 win.destroy()
 
             tk.Button(pf, text="Uji Odds ⚡", font=("Segoe UI", 8, "bold"), bg=GOLD, fg="#000", relief=tk.FLAT, cursor="hand2", command=pick).pack(side=tk.RIGHT)
+
+    # ========================== SETTINGS PERSISTENCE ==========================
+    def _save_settings(self):
+        """Save user preferences and settings to JSON file on exit."""
+        settings = {
+            "source": self.current_source,
+            "timeframe": self.current_timeframe,
+            "mode": self.active_mode,
+            "horizon": self.horizon_var.get(),
+            "replays": self.replays_var.get(),
+            "spread": self.spread_var.get(),
+            "projection_mode": self.proj_mode_var.get(),
+            "tie_break": self.tie_break_var.get(),
+            "seasonality": self.seasonality_var.get(),
+            "manual_direction": self.direction_var.get(),
+            "manual_entry": self.manual_entry_var.get(),
+            "manual_stop": self.manual_stop_var.get(),
+            "manual_target": self.manual_target_var.get(),
+        }
+        try:
+            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(settings, f, indent=2)
+        except Exception:
+            pass
+
+    def _load_settings(self):
+        """Load and restore saved user preferences from JSON file on launch."""
+        if not os.path.exists(SETTINGS_FILE):
+            return
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                settings = json.load(f)
+            
+            # Restore Data Source
+            saved_src = settings.get("source", "mt5")
+            if saved_src in ("mt5", "comex") and saved_src != self.current_source:
+                self._switch_data_source(saved_src)
+
+            # Restore Timeframe
+            saved_tf = settings.get("timeframe", "M5")
+            if saved_tf in ("M5", "M1") and saved_tf != self.current_timeframe:
+                self._set_timeframe(saved_tf)
+
+            # Restore Horizon
+            saved_h = settings.get("horizon")
+            if saved_h and saved_h in self.horizon_combo["values"]:
+                self.horizon_var.set(saved_h)
+
+            # Restore Replays & Spread
+            saved_replays = settings.get("replays")
+            if saved_replays:
+                self.replays_var.set(saved_replays)
+            saved_spread = settings.get("spread")
+            if saved_spread:
+                self.spread_var.set(saved_spread)
+
+            # Restore Statistical Methodology
+            saved_pm = settings.get("projection_mode")
+            if saved_pm and saved_pm in PROJECTION_MODES:
+                self.proj_mode_var.set(saved_pm)
+                self.current_projection_mode = PROJECTION_MODES[saved_pm]
+
+            saved_tb = settings.get("tie_break")
+            if saved_tb and saved_tb in TIE_BREAK_MODES:
+                self.tie_break_var.set(saved_tb)
+                self.current_tie_break = TIE_BREAK_MODES[saved_tb]
+
+            saved_season = settings.get("seasonality")
+            if saved_season and saved_season in SEASONALITY_MODES:
+                self.seasonality_var.set(saved_season)
+                self.current_seasonality = SEASONALITY_MODES[saved_season]
+
+            # Restore Manual Trade Setup Inputs
+            saved_dir = settings.get("manual_direction", "BUY")
+            if saved_dir in ("BUY", "SELL"):
+                self._set_direction(saved_dir)
+            if "manual_entry" in settings:
+                self.manual_entry_var.set(settings["manual_entry"])
+            if "manual_stop" in settings:
+                self.manual_stop_var.set(settings["manual_stop"])
+            if "manual_target" in settings:
+                self.manual_target_var.set(settings["manual_target"])
+
+            # Restore Active Mode
+            saved_mode = settings.get("mode", "auto")
+            if saved_mode in ("auto", "manual"):
+                self._set_app_mode(saved_mode)
+
+        except Exception:
+            pass
 
 def main():
     root = tk.Tk()
