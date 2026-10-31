@@ -41,7 +41,7 @@ RED = "#ef4444"
 BLUE = "#38bdf8"
 CYAN = "#06b6d4"
 
-HORIZON_PRESETS = [
+HORIZON_PRESETS_M5 = [
     ("30 Menit (6 bars M5)", 6),
     ("1 Jam (12 bars M5)", 12),
     ("2 Jam (24 bars M5)", 24),
@@ -52,8 +52,29 @@ HORIZON_PRESETS = [
     ("3 Hari Swing (864 bars M5)", 864),
     ("5 Hari / 1 Minggu Swing (1440 bars M5)", 1440),
     ("10 Hari / 2 Minggu Swing (2880 bars M5)", 2880),
-    ("15 Hari / 3 Minggu Swing (4320 bars M5)", 4320)
 ]
+
+HORIZON_PRESETS_M1 = [
+    ("15 Menit (15 bars M1)", 15),
+    ("30 Menit (30 bars M1)", 30),
+    ("1 Jam (60 bars M1)", 60),
+    ("2 Jam (120 bars M1)", 120),
+    ("4 Jam (240 bars M1)", 240),
+    ("8 Jam (480 bars M1)", 480),
+    ("24 Jam / 1 Hari (1440 bars M1)", 1440),
+]
+
+PROJECTION_MODES = {
+    "Two-Stream Free Drift (Recommended)": "free_drift",
+    "Frozen at Exit Level (Asli)": "frozen",
+    "Survival / Active Only (Kaplan-Meier)": "survival",
+}
+
+TIE_BREAK_MODES = {
+    "Smart Candle Anatomy (Recommended)": "smart",
+    "Conservative SL First (Asli)": "conservative",
+    "50:50 Balanced Coin Flip": "random",
+}
 
 class TimeMachineProGUI:
     def __init__(self, root):
@@ -68,9 +89,11 @@ class TimeMachineProGUI:
         self.prev_geometry = "1280x820+80+50"
         self._drag_data = {"x": 0, "y": 0}
 
-        # Data states
+        # Data & Methodology states
         self.current_source = "mt5"
         self.current_timeframe = "M5"  # default to M5, with M1 option available
+        self.current_projection_mode = "free_drift"  # default recommended two-stream unconstrained
+        self.current_tie_break = "smart"  # default recommended candle anatomy
         self.active_mode = "auto"  # "auto" or "manual"
         self.bars_data = None
         self.current_market_price = 3875.0
@@ -264,7 +287,7 @@ class TimeMachineProGUI:
         # Section 1: Time Horizon Selector (Common to both modes)
         tk.Label(self.left_panel, text="SCAN TIME HORIZON", font=("Segoe UI", 9, "bold"), fg=GOLD, bg=PANEL_BG).pack(anchor="w", pady=(0, 4))
         self.horizon_var = tk.StringVar(value="4 Jam (48 bars M5)")
-        horizon_options = [h[0] for h in HORIZON_PRESETS]
+        horizon_options = [h[0] for h in HORIZON_PRESETS_M5]
         self.horizon_combo = ttk.Combobox(
             self.left_panel, textvariable=self.horizon_var, values=horizon_options, state="readonly", font=("Segoe UI", 9)
         )
@@ -292,7 +315,7 @@ class TimeMachineProGUI:
 
         # Section 2: Replays & Spread
         sub_row = tk.Frame(self.left_panel, bg=PANEL_BG)
-        sub_row.pack(fill=tk.X, pady=(0, 12))
+        sub_row.pack(fill=tk.X, pady=(0, 8))
 
         f_rep = tk.Frame(sub_row, bg=PANEL_BG)
         f_rep.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
@@ -306,6 +329,30 @@ class TimeMachineProGUI:
         self.spread_var = tk.StringVar(value="0.24")
         self.spread_entry = tk.Entry(f_spr, textvariable=self.spread_var, font=("Segoe UI", 9), bg=INPUT_BG, fg=TEXT_PRIMARY, relief=tk.FLAT)
         self.spread_entry.pack(fill=tk.X, ipady=2)
+
+        # Section 2B: Statistical Methodology Options (User Selectable)
+        method_card = tk.Frame(self.left_panel, bg=CARD_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
+        method_card.pack(fill=tk.X, pady=(0, 10))
+
+        tk.Label(method_card, text="⚙️ STATISTICAL METHODOLOGY", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=CARD_BG).pack(anchor="w")
+
+        tk.Label(method_card, text="Fan Chart Projection", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w", pady=(4, 1))
+        self.proj_mode_var = tk.StringVar(value="Two-Stream Free Drift (Recommended)")
+        self.proj_combo = ttk.Combobox(
+            method_card, textvariable=self.proj_mode_var,
+            values=list(PROJECTION_MODES.keys()), state="readonly", font=("Segoe UI", 8)
+        )
+        self.proj_combo.pack(fill=tk.X)
+        self.proj_combo.bind("<<ComboboxSelected>>", lambda e: self._on_methodology_change())
+
+        tk.Label(method_card, text="Collision Tie-Break", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w", pady=(4, 1))
+        self.tie_break_var = tk.StringVar(value="Smart Candle Anatomy (Recommended)")
+        self.tb_combo = ttk.Combobox(
+            method_card, textvariable=self.tie_break_var,
+            values=list(TIE_BREAK_MODES.keys()), state="readonly", font=("Segoe UI", 8)
+        )
+        self.tb_combo.pack(fill=tk.X)
+        self.tb_combo.bind("<<ComboboxSelected>>", lambda e: self._on_methodology_change())
 
         # Section 3A: AUTO MODE SPECIFIC CONTROLS
         self.auto_sidebar_frame = tk.Frame(self.left_panel, bg=PANEL_BG)
@@ -519,10 +566,22 @@ class TimeMachineProGUI:
         if tf == "M5":
             self.btn_tf_m5.configure(bg=GOLD, fg="#0b0f17")
             self.btn_tf_m1.configure(bg=INPUT_BG, fg=TEXT_MUTED)
+            self.horizon_combo.configure(values=[h[0] for h in HORIZON_PRESETS_M5])
+            self.horizon_var.set("4 Jam (48 bars M5)")
         else:
             self.btn_tf_m1.configure(bg=GOLD, fg="#0b0f17")
             self.btn_tf_m5.configure(bg=INPUT_BG, fg=TEXT_MUTED)
+            self.horizon_combo.configure(values=[h[0] for h in HORIZON_PRESETS_M1])
+            self.horizon_var.set("4 Jam (240 bars M1)")
         self.refresh_data()
+
+    def _on_methodology_change(self):
+        self.current_projection_mode = PROJECTION_MODES.get(self.proj_mode_var.get(), "free_drift")
+        self.current_tie_break = TIE_BREAK_MODES.get(self.tie_break_var.get(), "smart")
+        if self.active_mode == "auto":
+            self.execute_auto_scan()
+        elif self.active_mode == "manual" and self.manual_result:
+            self.execute_manual_simulation()
 
     # ========================== DATA & EXECUTION ==========================
     def _initial_load_data(self):
@@ -568,10 +627,8 @@ class TimeMachineProGUI:
 
     def _get_selected_horizon_bars(self):
         h_text = self.horizon_var.get()
-        match = re.search(r'\((\d+)\s*bars', h_text.replace(".", ""))
-        if match:
-            return int(match.group(1))
-        return timemachine.parse_horizon(h_text)
+        interval = 1 if self.current_timeframe == "M1" else 5
+        return timemachine.normalize_horizon_bars(h_text, interval_minutes=interval)
 
     def _on_horizon_change(self):
         if self.active_mode == "auto":
@@ -582,6 +639,8 @@ class TimeMachineProGUI:
         bars_count = self._get_selected_horizon_bars()
         replays = int(self.replays_var.get().replace(",", "").replace(".", "").strip())
         spread = float(self.spread_var.get() or 0.24)
+        proj_mode = self.current_projection_mode
+        tb_mode = self.current_tie_break
 
         self.btn_run_auto.configure(state=tk.DISABLED, text="⚡ SCANNING...")
         self.dual_summary_title.configure(text="⏳ Scanning Optimal BUY & SELL Limit setups...", fg=GOLD)
@@ -592,7 +651,9 @@ class TimeMachineProGUI:
                     bars_data=self.bars_data,
                     horizon_bars=bars_count,
                     replays=replays,
-                    spread=spread
+                    spread=spread,
+                    projection_mode=proj_mode,
+                    tie_break=tb_mode
                 )
                 self.root.after(0, lambda: self._apply_dual_results(res))
             except Exception as e:
@@ -687,15 +748,34 @@ class TimeMachineProGUI:
             canvas.create_line(pad_left, y_px, w - pad_right, y_px, fill="#1c2536", dash=(2, 4))
             canvas.create_text(pad_left - 6, y_px, text=f"${y_val:.1f}", fill=TEXT_MUTED, font=("Segoe UI", 8), anchor="e")
 
-        # Time ticks
-        total_hours = steps[-1] * 5 / 60
+        # Time ticks - dynamically scaled by interval
+        meta = sim_res.get("meta", {}) or sim_res.get("plan", {})
+        int_m = meta.get("interval_minutes", 1 if self.current_timeframe == "M1" else 5)
+        total_hours = steps[-1] * int_m / 60
         is_multiday = total_hours >= 24.0
         for i in range(4):
             bar_val = steps[-1] * (i / 3.0)
             x_px = to_x(bar_val)
             canvas.create_line(x_px, pad_top, x_px, h - pad_bottom, fill="#1c2536", dash=(2, 4))
-            t_lbl = f"+{bar_val*5/1440:.1f}d" if is_multiday else f"+{bar_val*5/60:.1f}h"
+            if is_multiday:
+                t_lbl = f"+{bar_val * int_m / 1440:.1f}d"
+            elif total_hours < 1.0:
+                t_lbl = f"+{int(round(bar_val * int_m))}m"
+            else:
+                t_lbl = f"+{bar_val * int_m / 60:.1f}h"
             canvas.create_text(x_px, h - pad_bottom + 12, text=t_lbl, fill=TEXT_MUTED, font=("Segoe UI", 8))
+
+        # Methodology & Timeframe Tag Badge
+        proj_mode = meta.get("projection_mode", "free_drift")
+        tb_mode = meta.get("tie_break", "smart")
+        pm_tag = "Two-Stream" if proj_mode == "free_drift" else ("Frozen (Asli)" if proj_mode == "frozen" else "Survival")
+        tb_tag = "Smart" if tb_mode == "smart" else ("SL First (Asli)" if tb_mode == "conservative" else "50:50")
+
+        canvas.create_text(
+            pad_left + 8, pad_top + 10,
+            text=f"⚙️ {pm_tag} | {tb_tag} | M{int_m}",
+            fill="#64748b", font=("Segoe UI", 8), anchor="w"
+        )
 
         # 90% Ribbon
         poly_90 = []
@@ -789,7 +869,9 @@ class TimeMachineProGUI:
                     horizon_bars=bars_count,
                     replays=replays,
                     spread=spread,
-                    bars_data=self.bars_data
+                    bars_data=self.bars_data,
+                    projection_mode=self.current_projection_mode,
+                    tie_break=self.current_tie_break
                 )
                 self.root.after(0, lambda: self._apply_manual_results(res))
             except Exception as e:

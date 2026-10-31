@@ -35,10 +35,18 @@ def calculate_market_metrics(bars, period=48):
         "current_price": closes[-1]
     }
 
-def find_dual_recommendations(bars_data, horizon_bars=48, replays=5000, spread=0.24, seed=19):
+def find_dual_recommendations(
+    bars_data,
+    horizon_bars=48,
+    replays=5000,
+    spread=0.24,
+    seed=19,
+    projection_mode="free_drift",
+    tie_break="smart"
+):
     """
     Simultaneously optimizes and evaluates both BUY LIMIT and SELL LIMIT setups.
-    Returns full Monte Carlo results for both directions.
+    Returns full Monte Carlo results for both directions using specified statistical methodology.
     """
     bars = bars_data.get("bars", [])
     if len(bars) < 100:
@@ -47,18 +55,24 @@ def find_dual_recommendations(bars_data, horizon_bars=48, replays=5000, spread=0
     metrics = calculate_market_metrics(bars, period=min(len(bars), max(48, horizon_bars)))
     cur = metrics["current_price"]
     atr = metrics["atr"]
+    interval_minutes = bars_data.get("interval_minutes", 5)
     
     # Scale distances by horizon (longer horizon allows wider SL/TP)
-    horizon_factor = max(1.0, (horizon_bars / 48.0) ** 0.5)
+    base_4h_bars = 240 / interval_minutes
+    horizon_factor = max(0.6, (horizon_bars / base_4h_bars) ** 0.5)
     effective_atr = atr * horizon_factor
+    
+    # Adaptive buffer based on timeframe
+    min_pullback = 0.5 if interval_minutes == 1 else 1.5
+    min_risk = 1.5 if interval_minutes == 1 else 3.0
     
     # ------------------ 1. BUY LIMIT CANDIDATE ------------------
     # Entry at slight pullback (discount)
     pullback_buy = round(min(effective_atr * 0.35, (cur - metrics["swing_low"]) * 0.4), 2)
-    buy_entry = round(cur - max(1.5, pullback_buy), 2)
+    buy_entry = round(cur - max(min_pullback, pullback_buy), 2)
     
     # Risk based on ATR and swing low protection
-    buy_risk = round(max(3.0, effective_atr * 1.0), 2)
+    buy_risk = round(max(min_risk, effective_atr * (1.2 if interval_minutes == 1 else 1.0)), 2)
     buy_stop = round(buy_entry - buy_risk, 2)
     
     # Reward with healthy 1:2.0 ratio
@@ -74,16 +88,18 @@ def find_dual_recommendations(bars_data, horizon_bars=48, replays=5000, spread=0
         replays=replays,
         spread=spread,
         seed=seed,
-        bars_data=bars_data
+        bars_data=bars_data,
+        projection_mode=projection_mode,
+        tie_break=tie_break
     )
     
     # ------------------ 2. SELL LIMIT CANDIDATE ------------------
     # Entry at slight rally (premium)
     rally_sell = round(min(effective_atr * 0.35, (metrics["swing_high"] - cur) * 0.4), 2)
-    sell_entry = round(cur + max(1.5, rally_sell), 2)
+    sell_entry = round(cur + max(min_pullback, rally_sell), 2)
     
     # Risk based on ATR and swing high protection
-    sell_risk = round(max(3.0, effective_atr * 1.0), 2)
+    sell_risk = round(max(min_risk, effective_atr * (1.2 if interval_minutes == 1 else 1.0)), 2)
     sell_stop = round(sell_entry + sell_risk, 2)
     
     # Reward with healthy 1:2.0 ratio
@@ -99,7 +115,9 @@ def find_dual_recommendations(bars_data, horizon_bars=48, replays=5000, spread=0
         replays=replays,
         spread=spread,
         seed=seed,
-        bars_data=bars_data
+        bars_data=bars_data,
+        projection_mode=projection_mode,
+        tie_break=tie_break
     )
     
     # Determine best direction by Expectancy / Expected R

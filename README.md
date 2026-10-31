@@ -23,6 +23,16 @@ Inspired by Jake Schincariol's `trader-timemachine` from [day-trader-skill](http
    - Fallback otomatis ke data COMEX online jika MT5 tidak dibuka.
 5. **Mode Manual & Impor Posisi Aktif MT5**:
    - Mendukung input angka kustom atau 1-klik impor posisi aktif yang sedang floating di MT5.
+6. **⚙️ Opsi Metodologi Statistik Lengkap (Bebas Dipilih & Dibandingkan)**:
+   - **Fan Chart Projection Mode:**
+     - **Two-Stream Free Drift (Default / Rekomendasi Utama):** Lintasan harga fan chart terus berayun alami sesuai volatilitas pasar murni tanpa distorsi path beku (*unconstrained price distribution*), sementara Odds Evaluator secara independen menghitung first-passage SL/TP.
+     - **Frozen at Exit Level (Versi Asli / Baseline):** Mempertahankan metodologi orisinal Jake Schincariol di mana path yang mengenai SL/TP dibekukan pada level exit untuk perbandingan baseline.
+     - **Survival / Active Only (Kaplan-Meier Style):** Menghitung distribusi persentil hanya dari lintasan yang masih aktif (belum exit) pada setiap step bar.
+   - **Collision Tie-Break Resolution (Jika SL & TP tersentuh di bar yang sama):**
+     - **Smart Candle Anatomy (Default / Rekomendasi Utama):** Mengeliminasi bias pesimistis dengan membaca anatomi candle historis (candle bullish bergerak ke low dulu; candle bearish bergerak ke high dulu; doji 50:50).
+     - **Conservative SL First (Versi Asli / Baseline):** Mempertahankan logika orisinal di mana collision selalu dianggap terkena Stop Loss terlebih dahulu.
+     - **50:50 Balanced Coin Flip:** Uji Bernoulli seimbang 50% TP vs 50% SL.
+   - **Dynamic Horizon Scaling:** Normalisasi horizon waktu dinamis yang mengenali interval bar aktual (M1 vs M5) secara presisi, tanpa hardcode 5 menit.
 
 ---
 
@@ -37,6 +47,9 @@ Inspired by Jake Schincariol's `trader-timemachine` from [day-trader-skill](http
 # Jalankan Auto Analyzer via CLI
 python analyzer.py
 
-# Jalankan simulasi manual
-python timemachine.py --source mt5 --horizon 4h --replays 5000
+# Jalankan simulasi manual dengan metodologi rekomendasi (default)
+python timemachine.py --source mt5 --horizon 4h --replays 5000 --projection-mode free_drift --tie-break smart
+
+# Jalankan simulasi manual dengan metodologi asli/baseline (untuk membandingkan)
+python timemachine.py --source mt5 --horizon 4h --replays 5000 --projection-mode frozen --tie-break conservative
 ```
