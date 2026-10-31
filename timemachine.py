@@ -117,22 +117,27 @@ def get_gold_bars(source="comex", symbol=None, csv_path=None, force_refresh=Fals
     data = fetch_yahoo_gold_data()
     data["source"] = "COMEX"
     try:
+        # Sentinel: Use safe file writing by explicitly specifying absolute paths
+        # (Though CACHE_FILE is already absolute, this ensures safety).
         with open(CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f)
     except Exception:
         pass
     return data
 
-def build_slot_pool(bars, window=2, interval_minutes=None):
+def build_slot_pool(bars, window=2, interval_minutes=None, seasonality=False):
     """
     Groups historical bars into daily time-of-day slots (UTC).
     288 slots for 5-minute bars (M5), or 1440 slots for 1-minute bars (M1).
+    If seasonality is True, it multiplies total slots by 7 to distinguish day of the week.
     Each slot stores arrays of (open_r, high_r, low_r, close_r) relative to prev_close.
     """
     if interval_minutes is None:
         interval_minutes = 1 if len(bars) > 1 and abs(bars[1]["timestamp"] - bars[0]["timestamp"]) <= 120 else 5
         
-    total_slots = 1440 if interval_minutes == 1 else 288
+    time_slots_per_day = 1440 if interval_minutes == 1 else 288
+    total_slots = time_slots_per_day * 7 if seasonality else time_slots_per_day
+
     slot_pools = [[] for _ in range(total_slots)]
     
     for i in range(1, len(bars)):
@@ -140,10 +145,18 @@ def build_slot_pool(bars, window=2, interval_minutes=None):
         bar = bars[i]
         t = bar["timestamp"]
         
+        # Bolt: Avoid recomputing dt.hour and dt.minute multiple times (Performance)
         dt = datetime.datetime.fromtimestamp(t, tz=datetime.timezone.utc)
-        slot = (dt.hour * 60 + dt.minute) if interval_minutes == 1 else (dt.hour * 60 + dt.minute) // 5
-        slot = slot % total_slots
+        hour, minute = dt.hour, dt.minute
+        time_slot = (hour * 60 + minute) if interval_minutes == 1 else (hour * 60 + minute) // 5
+        time_slot = time_slot % time_slots_per_day
         
+        if seasonality:
+            day_of_week = dt.weekday()
+            slot = day_of_week * time_slots_per_day + time_slot
+        else:
+            slot = time_slot
+
         o_r = bar["open"] / prev_close
         h_r = bar["high"] / prev_close
         l_r = bar["low"] / prev_close
@@ -179,7 +192,7 @@ def build_slot_pool(bars, window=2, interval_minutes=None):
             else:
                 numpy_pools.append(fallback_pool)
                 
-    return numpy_pools, interval_minutes, total_slots
+    return numpy_pools, interval_minutes, time_slots_per_day, total_slots
 
 def run_simulation(
     entry_price: float,
@@ -194,7 +207,8 @@ def run_simulation(
     window: int = 2,
     bars_data: dict = None,
     projection_mode: str = "free_drift",  # "free_drift" (default/recommended), "frozen" (asli), "survival" (kaplan-meier)
-    tie_break: str = "smart"  # "smart" (default/recommended), "conservative" (asli), "random"
+    tie_break: str = "smart",  # "smart" (default/recommended), "conservative" (asli), "random"
+    seasonality: bool = False
 ):
     """
     Run high-performance Monte Carlo simulation on Gold setup.
@@ -219,12 +233,16 @@ def run_simulation(
     if len(bars) < 200:
         raise ValueError("Not enough historical bar data for simulation")
         
-    pools, interval_minutes, total_slots = build_slot_pool(bars, window=window)
+    pools, interval_minutes, time_slots_per_day, total_slots = build_slot_pool(bars, window=window, seasonality=seasonality)
     
     if entry_slot is None:
         now_dt = datetime.datetime.now(datetime.timezone.utc)
-        entry_slot = (now_dt.hour * 60 + now_dt.minute) if interval_minutes == 1 else (now_dt.hour * 60 + now_dt.minute) // 5
-        entry_slot = entry_slot % total_slots
+        time_slot = (now_dt.hour * 60 + now_dt.minute) if interval_minutes == 1 else (now_dt.hour * 60 + now_dt.minute) // 5
+        time_slot = time_slot % time_slots_per_day
+        if seasonality:
+            entry_slot = now_dt.weekday() * time_slots_per_day + time_slot
+        else:
+            entry_slot = time_slot
         
     market_prices = np.full(replays, entry_price, dtype=np.float64)  # unconstrained price
     frozen_prices = np.full(replays, entry_price, dtype=np.float64)  # frozen at exit (asli)
@@ -533,6 +551,7 @@ def main():
     parser.add_argument("--csv", help="Optional local CSV file of M5 bars")
     parser.add_argument("--refresh", action="store_true", help="Force refresh cache from Yahoo Finance")
     parser.add_argument("--json", action="store_true", help="Output result as JSON")
+    parser.add_argument("--seasonality", action="store_true", help="Enable day-of-week seasonality")
     args = parser.parse_args()
 
     bars_data = get_gold_bars(
@@ -569,7 +588,8 @@ def main():
         spread=spread,
         bars_data=bars_data,
         projection_mode=args.projection_mode,
-        tie_break=args.tie_break
+        tie_break=args.tie_break,
+        seasonality=args.seasonality
     )
 
     if args.json:

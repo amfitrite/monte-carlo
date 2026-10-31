@@ -76,6 +76,11 @@ TIE_BREAK_MODES = {
     "50:50 Balanced Coin Flip": "random",
 }
 
+SEASONALITY_MODES = {
+    "Off (Default/Asli)": False,
+    "On (Day-of-Week Aware)": True,
+}
+
 class TimeMachineProGUI:
     def __init__(self, root):
         self.root = root
@@ -94,6 +99,7 @@ class TimeMachineProGUI:
         self.current_timeframe = "M5"  # default to M5, with M1 option available
         self.current_projection_mode = "free_drift"  # default recommended two-stream unconstrained
         self.current_tie_break = "smart"  # default recommended candle anatomy
+        self.current_seasonality = False  # default off
         self.active_mode = "auto"  # "auto" or "manual"
         self.bars_data = None
         self.current_market_price = 3875.0
@@ -358,6 +364,15 @@ class TimeMachineProGUI:
         self.tb_combo.pack(fill=tk.X)
         self.tb_combo.bind("<<ComboboxSelected>>", lambda e: self._on_methodology_change())
 
+        tk.Label(method_card, text="Seasonality Filter", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w", pady=(4, 1))
+        self.seasonality_var = tk.StringVar(value="Off (Default/Asli)")
+        self.seasonality_combo = ttk.Combobox(
+            method_card, textvariable=self.seasonality_var,
+            values=list(SEASONALITY_MODES.keys()), state="readonly", font=("Segoe UI", 8), cursor="hand2"
+        )
+        self.seasonality_combo.pack(fill=tk.X)
+        self.seasonality_combo.bind("<<ComboboxSelected>>", lambda e: self._on_methodology_change())
+
         # Section 3A: AUTO MODE SPECIFIC CONTROLS
         self.auto_sidebar_frame = tk.Frame(self.left_panel, bg=PANEL_BG)
         
@@ -594,6 +609,7 @@ class TimeMachineProGUI:
     def _on_methodology_change(self):
         self.current_projection_mode = PROJECTION_MODES.get(self.proj_mode_var.get(), "free_drift")
         self.current_tie_break = TIE_BREAK_MODES.get(self.tie_break_var.get(), "smart")
+        self.current_seasonality = SEASONALITY_MODES.get(self.seasonality_var.get(), False)
         if self.active_mode == "auto":
             self.execute_auto_scan()
         elif self.active_mode == "manual" and self.manual_result:
@@ -657,6 +673,7 @@ class TimeMachineProGUI:
         spread = float(self.spread_var.get() or 0.24)
         proj_mode = self.current_projection_mode
         tb_mode = self.current_tie_break
+        season_mode = self.current_seasonality
 
         self.btn_run_auto.configure(state=tk.DISABLED, text="⚡ SCANNING...")
         self.dual_summary_title.configure(text="⏳ Scanning Optimal BUY & SELL Limit setups...", fg=GOLD)
@@ -669,7 +686,8 @@ class TimeMachineProGUI:
                     replays=replays,
                     spread=spread,
                     projection_mode=proj_mode,
-                    tie_break=tb_mode
+                    tie_break=tb_mode,
+                    seasonality=season_mode
                 )
                 self.root.after(0, lambda: self._apply_dual_results(res))
             except Exception as e:
@@ -887,7 +905,8 @@ class TimeMachineProGUI:
                     spread=spread,
                     bars_data=self.bars_data,
                     projection_mode=self.current_projection_mode,
-                    tie_break=self.current_tie_break
+                    tie_break=self.current_tie_break,
+                    seasonality=self.current_seasonality
                 )
                 self.root.after(0, lambda: self._apply_manual_results(res))
             except Exception as e:

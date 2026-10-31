@@ -42,7 +42,8 @@ def find_dual_recommendations(
     spread=0.24,
     seed=19,
     projection_mode="free_drift",
-    tie_break="smart"
+    tie_break="smart",
+    seasonality=False
 ):
     """
     Simultaneously optimizes and evaluates both BUY LIMIT and SELL LIMIT setups.
@@ -90,7 +91,8 @@ def find_dual_recommendations(
         seed=seed,
         bars_data=bars_data,
         projection_mode=projection_mode,
-        tie_break=tie_break
+        tie_break=tie_break,
+        seasonality=seasonality
     )
     
     # ------------------ 2. SELL LIMIT CANDIDATE ------------------
@@ -117,7 +119,8 @@ def find_dual_recommendations(
         seed=seed,
         bars_data=bars_data,
         projection_mode=projection_mode,
-        tie_break=tie_break
+        tie_break=tie_break,
+        seasonality=seasonality
     )
     
     # Determine best direction by Expectancy / Expected R
