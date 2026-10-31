@@ -106,3 +106,19 @@ Run the unit tests with:
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+
+## Dual Auto Analyzer: candidate discovery
+
+Dual Auto Analyzer is the inverse workflow to Manual Monte Carlo:
+
+- **Manual:** the trader supplies Entry, Stop Loss, and Take Profit; the engine evaluates that fixed plan.
+- **Dual Auto:** the analyzer creates multiple BUY LIMIT and SELL LIMIT candidates from recent ATR pullbacks and swing structure, assigns each candidate an SL/TP using ATR risk and RR scenarios, evaluates candidates, and returns the highest-expectancy candidate on each side.
+
+The scan currently evaluates up to 20 candidates per side (5 entry areas × 2 ATR risk settings × 2 RR settings). It uses a capped replay count for candidate ranking, then re-runs the selected BUY and SELL candidates at the requested replay count. Ranking is based primarily on simulated average R (expectancy); TP-first probability and RR are displayed as supporting statistics.
+
+**No-trade behavior:** if neither side has positive simulated average R, the analyzer reports `NO TRADE` instead of promoting the least-bad setup. If both sides have positive and similar expectancy, it reports `EQUAL`.
+
+**Limit-order fill limitation:** the reported TP/SL probabilities are conditional on the proposed limit entry being filled. Current OHLC-only logic does not estimate the probability or time-to-fill of an unfilled limit order. Do not interpret these figures as unconditional trade probabilities or calibrated live probabilities.
+
+Compare mode discovers candidates using Legacy V1 (the preserved baseline), then evaluates the same selected BUY and SELL plans with Enhanced V2. This isolates the engine comparison on the final plans; it does not establish out-of-sample predictive accuracy.
