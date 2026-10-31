@@ -1,187 +1,301 @@
 """
-Dual-Engine Auto-Analyzer for XAUUSD Time Machine
-Computes optimal BUY LIMIT and SELL LIMIT setups using market structure (ATR & Swing Levels),
-evaluates both simultaneously via Monte Carlo simulation, and outputs dual visual setups.
-"""
+Dual Auto Analyzer for XAUUSD.
 
+Manual Monte Carlo evaluates a user-supplied Entry/SL/TP.
+Dual Auto Analyzer does the inverse: it searches a candidate grid for BUY LIMIT
+and SELL LIMIT setups, ranks candidates by simulated expectancy, then evaluates
+the selected candidates with the chosen Monte Carlo engine.
+
+Important limitation: OHLC-only simulations assume the proposed limit entry is
+filled. They do not estimate the probability or timing of that fill.
+"""
 import numpy as np
 import timemachine
 import engine_v2
 
+
+def _valid_bars(bars):
+    clean = []
+    for bar in bars:
+        try:
+            ts = float(bar["timestamp"])
+            o, h, l, c = (float(bar[k]) for k in ("open", "high", "low", "close"))
+            if ts > 0 and min(o, h, l, c) > 0 and l <= min(o, c) <= max(o, c) <= h:
+                clean.append({"timestamp": ts, "open": o, "high": h, "low": l, "close": c})
+        except (KeyError, TypeError, ValueError):
+            continue
+    clean.sort(key=lambda x: x["timestamp"])
+    # Drop duplicate timestamps, keeping the last valid record.
+    by_time = {b["timestamp"]: b for b in clean}
+    return [by_time[t] for t in sorted(by_time)]
+
+
 def calculate_market_metrics(bars, period=48):
-    """Calculate ATR and recent swing levels from historical bars."""
-    if len(bars) < period:
-        period = max(10, len(bars) - 1)
-        
-    recent = bars[-period:]
-    highs = np.array([b["high"] for b in recent])
-    lows = np.array([b["low"] for b in recent])
-    closes = np.array([b["close"] for b in recent])
-    
-    tr_list = []
-    for i in range(1, len(recent)):
-        hl = highs[i] - lows[i]
-        hc = abs(highs[i] - closes[i-1])
-        lc = abs(lows[i] - closes[i-1])
-        tr_list.append(max(hl, hc, lc))
-        
-    atr = float(np.mean(tr_list)) if tr_list else 5.0
-    swing_high = float(np.max(highs))
-    swing_low = float(np.min(lows))
-    
+    """Calculate recent ATR and structural extremes using only supplied history."""
+    if len(bars) < 20:
+        raise ValueError("At least 20 valid bars are required to calculate market structure.")
+    recent = bars[-min(len(bars), max(20, int(period))):]
+    highs = np.asarray([b["high"] for b in recent], dtype=float)
+    lows = np.asarray([b["low"] for b in recent], dtype=float)
+    closes = np.asarray([b["close"] for b in recent], dtype=float)
+    prev = np.asarray([b["close"] for b in recent[:-1]], dtype=float)
+    tr = np.maximum(highs[1:] - lows[1:],
+                    np.maximum(np.abs(highs[1:] - prev), np.abs(lows[1:] - prev)))
+    atr = float(np.mean(tr)) if len(tr) else float(np.mean(highs - lows))
+    if not np.isfinite(atr) or atr <= 0:
+        raise ValueError("ATR could not be calculated from the supplied OHLC history.")
     return {
-        "atr": max(1.5, atr),
-        "swing_high": swing_high,
-        "swing_low": swing_low,
-        "current_price": closes[-1]
+        "atr": atr,
+        "swing_high": float(np.max(highs)),
+        "swing_low": float(np.min(lows)),
+        "current_price": float(closes[-1]),
+        "structure_range": float(np.max(highs) - np.min(lows)),
+        "lookback_bars": len(recent)
     }
 
+
+def _candidate_entries(side, metrics):
+    """Build a compact set of limit prices around ATR pullbacks and swing structure."""
+    cur, atr = metrics["current_price"], metrics["atr"]
+    lo, hi = metrics["swing_low"], metrics["swing_high"]
+    span = max(hi - lo, atr)
+    if side == "buy":
+        raw = [cur - atr * x for x in (0.25, 0.40, 0.60, 0.80, 1.0)]
+        raw += [lo + span * x for x in (0.15, 0.25, 0.35)]
+        valid = [x for x in raw if cur - 2.0 * atr <= x <= cur - 0.10 * atr]
+    else:
+        raw = [cur + atr * x for x in (0.25, 0.40, 0.60, 0.80, 1.0)]
+        raw += [hi - span * x for x in (0.15, 0.25, 0.35)]
+        valid = [x for x in raw if cur + 0.10 * atr <= x <= cur + 2.0 * atr]
+    # Round to cents, de-duplicate and keep candidates ordered nearest to market first.
+    valid = sorted(set(round(float(x), 2) for x in valid),
+                   key=lambda x: abs(x - cur))
+    if not valid:
+        valid = [round(cur - 0.5 * atr, 2) if side == "buy"
+                 else round(cur + 0.5 * atr, 2)]
+    return valid[:5]
+
+
+def _build_plan(side, entry, metrics, risk_atr, rr, interval_minutes):
+    atr = metrics["atr"]
+    if side == "buy":
+        structural_risk = max(0.0, entry - metrics["swing_low"]) + 0.10 * atr
+        risk = max(atr * risk_atr, structural_risk)
+        stop, target = entry - risk, entry + risk * rr
+    else:
+        structural_risk = max(0.0, metrics["swing_high"] - entry) + 0.10 * atr
+        risk = max(atr * risk_atr, structural_risk)
+        stop, target = entry + risk, entry - risk * rr
+    return {
+        "entry_price": round(entry, 2),
+        "stop_loss": round(stop, 2),
+        "take_profit": round(target, 2),
+        "side": side,
+        "risk_atr": float(risk_atr),
+        "target_rr": float(rr),
+        "interval_minutes": int(interval_minutes)
+    }
+
+
+def _run_one(plan, bars_data, horizon_bars, replays, spread, seed,
+             projection_mode, tie_break, seasonality, engine_mode):
+    common = dict(
+        entry_price=plan["entry_price"], stop_loss=plan["stop_loss"],
+        take_profit=plan["take_profit"], side=plan["side"],
+        horizon_bars=horizon_bars, replays=replays, spread=spread,
+        seed=seed, bars_data=bars_data
+    )
+    if engine_mode == "v2":
+        return engine_v2.run_simulation(**common)
+    return timemachine.run_simulation(
+        **common, projection_mode=projection_mode,
+        tie_break=tie_break, seasonality=seasonality
+    )
+
+
+def _rank_score(result):
+    odds = result["odds"]
+    # Expected R is the primary objective; target-first probability and RR are
+    # tie-breakers, not substitutes for expectancy.
+    return (float(odds["avg_r"]), float(odds["target_first_pct"]),
+            float(result["plan"]["target_r"]))
+
+
+def _scan_side(side, metrics, bars_data, horizon_bars, search_replays, spread,
+               seed, projection_mode, tie_break, seasonality, engine_mode):
+    interval = int(bars_data.get("interval_minutes", 5) or 5)
+    entries = _candidate_entries(side, metrics)
+    risk_multipliers = (0.80, 1.10)
+    rr_values = (1.50, 2.0)
+    candidates = []
+    index = 0
+    for entry in entries:
+        for risk_atr in risk_multipliers:
+            for rr in rr_values:
+                plan = _build_plan(side, entry, metrics, risk_atr, rr, interval)
+                result = _run_one(
+                    plan, bars_data, horizon_bars, search_replays, spread,
+                    seed + index, projection_mode, tie_break, seasonality, engine_mode
+                )
+                candidates.append(( _rank_score(result), plan, result))
+                index += 1
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    if not candidates:
+        raise ValueError(f"No valid {side.upper()} LIMIT candidates could be generated.")
+    return candidates[0], len(candidates)
+
+
+def _finalize_recommendation(side, selected, candidate_count, bars_data,
+                             metrics, horizon_bars, replays, spread, seed,
+                             projection_mode, tie_break, seasonality, engine_mode):
+    _, plan, coarse = selected
+    # Re-run the winning candidate at the requested replay count.
+    primary_mode = "legacy" if engine_mode == "compare" else engine_mode
+    result = _run_one(
+        plan, bars_data, horizon_bars, replays, spread, seed + (101 if side == "buy" else 202),
+        projection_mode, tie_break, seasonality, primary_mode
+    )
+    if engine_mode == "compare":
+        v2 = _run_one(
+            plan, bars_data, horizon_bars, replays, spread,
+            seed + (101 if side == "buy" else 202),
+            projection_mode, tie_break, seasonality, "v2"
+        )
+        result["comparison"] = {
+            "engine": "Enhanced V2",
+            "target_first_pct": v2["odds"]["target_first_pct"],
+            "stop_first_pct": v2["odds"]["stop_first_pct"],
+            "neither_pct": v2["odds"]["neither_pct"],
+            "avg_r": v2["odds"]["avg_r"],
+            "ambiguous_pct": v2["odds"].get("ambiguous_pct", 0.0),
+            "optimistic_target_first_pct": v2["odds"].get("optimistic_target_first_pct", 0.0)
+        }
+    result["plan"]["order_type"] = "LIMIT"
+    result["plan"]["candidate_count_scanned"] = candidate_count
+    result["plan"]["candidate_search_replays"] = int(coarse["plan"]["replays"])
+    result["plan"]["entry_fill_probability"] = None
+    result["plan"]["entry_fill_assumption"] = (
+        "Conditional on the proposed limit order being filled; OHLC scan does not estimate fill probability."
+    )
+    result["recommendation"] = {
+        "status": "candidate" if result["odds"]["avg_r"] > 0 else "no_positive_expectancy",
+        "ranking_metric": "simulated_average_R",
+        "simulated_average_R": result["odds"]["avg_r"],
+        "target_first_probability_pct": result["odds"]["target_first_pct"],
+        "breakeven_probability_pct": result["odds"]["breakeven_pct"],
+        "fill_probability": None,
+        "warning": "Outcome probabilities are conditional on entry fill and are not live calibrated probabilities."
+    }
+    return result
+
+
 def find_dual_recommendations(
-    bars_data,
-    horizon_bars=48,
-    replays=5000,
-    spread=0.24,
-    seed=19,
-    projection_mode="free_drift",
-    tie_break="smart",
-    seasonality=False,
+    bars_data, horizon_bars=48, replays=5000, spread=0.24, seed=19,
+    projection_mode="free_drift", tie_break="smart", seasonality=False,
     engine_mode="legacy"
 ):
     """
-    Simultaneously optimizes and evaluates both BUY LIMIT and SELL LIMIT setups.
-    Returns full Monte Carlo results for both directions using specified statistical methodology.
-    """
-    def run_engine(**params):
-        if engine_mode == "legacy":
-            return timemachine.run_simulation(**params)
-        enhanced = engine_v2.run_simulation(**{k: v for k, v in params.items()
-                                                if k not in ("projection_mode", "tie_break", "seasonality")})
-        if engine_mode == "v2":
-            return enhanced
-        legacy = timemachine.run_simulation(**params)
-        legacy["comparison"] = {
-            "engine": "Enhanced V2",
-            "target_first_pct": enhanced["odds"]["target_first_pct"],
-            "stop_first_pct": enhanced["odds"]["stop_first_pct"],
-            "neither_pct": enhanced["odds"]["neither_pct"],
-            "avg_r": enhanced["odds"]["avg_r"],
-            "ambiguous_pct": enhanced["odds"].get("ambiguous_pct", 0.0),
-            "optimistic_target_first_pct": enhanced["odds"].get("optimistic_target_first_pct", 0.0)
-        }
-        return legacy
+    Search and rank multiple BUY LIMIT and SELL LIMIT candidates.
 
-    bars = bars_data.get("bars", [])
-    if len(bars) < 100:
-        raise ValueError("Not enough bars to scan setups.")
-        
+    The candidate scan uses a lower replay count for speed, then re-runs each
+    selected side's best candidate at the requested replay count. Compare mode
+    selects candidates using Legacy V1 and evaluates the same final plans with V2.
+    """
+    if engine_mode not in ("legacy", "v2", "compare"):
+        raise ValueError("engine_mode must be 'legacy', 'v2', or 'compare'.")
+    bars = _valid_bars((bars_data or {}).get("bars", []))
+    if len(bars) < 200:
+        raise ValueError("Dual Auto Analyzer requires at least 200 valid chronological OHLC bars.")
+    normalized = dict(bars_data)
+    normalized["bars"] = bars
+    if "interval_minutes" not in normalized:
+        delta = bars[-1]["timestamp"] - bars[-2]["timestamp"]
+        normalized["interval_minutes"] = 1 if delta <= 120 else max(1, int(round(delta / 60)))
     metrics = calculate_market_metrics(bars, period=min(len(bars), max(48, horizon_bars)))
-    cur = metrics["current_price"]
-    atr = metrics["atr"]
-    interval_minutes = bars_data.get("interval_minutes", 5)
-    
-    # Scale distances by horizon (longer horizon allows wider SL/TP)
-    base_4h_bars = 240 / interval_minutes
-    horizon_factor = max(0.6, (horizon_bars / base_4h_bars) ** 0.5)
-    effective_atr = atr * horizon_factor
-    
-    # Adaptive buffer based on timeframe
-    min_pullback = 0.5 if interval_minutes == 1 else 1.5
-    min_risk = 1.5 if interval_minutes == 1 else 3.0
-    
-    # ------------------ 1. BUY LIMIT CANDIDATE ------------------
-    # Entry at slight pullback (discount)
-    pullback_buy = round(min(effective_atr * 0.35, (cur - metrics["swing_low"]) * 0.4), 2)
-    buy_entry = round(cur - max(min_pullback, pullback_buy), 2)
-    
-    # Risk based on ATR and swing low protection
-    buy_risk = round(max(min_risk, effective_atr * (1.2 if interval_minutes == 1 else 1.0)), 2)
-    buy_stop = round(buy_entry - buy_risk, 2)
-    
-    # Reward with healthy 1:2.0 ratio
-    buy_reward = round(buy_risk * 2.0, 2)
-    buy_target = round(buy_entry + buy_reward, 2)
-    
-    buy_res = run_engine(
-        entry_price=buy_entry,
-        stop_loss=buy_stop,
-        take_profit=buy_target,
-        side="buy",
-        horizon_bars=horizon_bars,
-        replays=replays,
-        spread=spread,
-        seed=seed,
-        bars_data=bars_data,
-        projection_mode=projection_mode,
-        tie_break=tie_break,
-        seasonality=seasonality
+    interval = int(normalized.get("interval_minutes", 5) or 5)
+    metrics["interval_minutes"] = interval
+
+    horizon_bars = max(1, int(horizon_bars))
+    replays = max(100, int(replays))
+    search_replays = min(replays, 600)
+    primary_mode = "legacy" if engine_mode == "compare" else engine_mode
+
+    buy_selected, buy_count = _scan_side(
+        "buy", metrics, normalized, horizon_bars, search_replays, spread, seed,
+        projection_mode, tie_break, seasonality, primary_mode
     )
-    
-    # ------------------ 2. SELL LIMIT CANDIDATE ------------------
-    # Entry at slight rally (premium)
-    rally_sell = round(min(effective_atr * 0.35, (metrics["swing_high"] - cur) * 0.4), 2)
-    sell_entry = round(cur + max(min_pullback, rally_sell), 2)
-    
-    # Risk based on ATR and swing high protection
-    sell_risk = round(max(min_risk, effective_atr * (1.2 if interval_minutes == 1 else 1.0)), 2)
-    sell_stop = round(sell_entry + sell_risk, 2)
-    
-    # Reward with healthy 1:2.0 ratio
-    sell_reward = round(sell_risk * 2.0, 2)
-    sell_target = round(sell_entry - sell_reward, 2)
-    
-    sell_res = run_engine(
-        entry_price=sell_entry,
-        stop_loss=sell_stop,
-        take_profit=sell_target,
-        side="sell",
-        horizon_bars=horizon_bars,
-        replays=replays,
-        spread=spread,
-        seed=seed,
-        bars_data=bars_data,
-        projection_mode=projection_mode,
-        tie_break=tie_break,
-        seasonality=seasonality
+    sell_selected, sell_count = _scan_side(
+        "sell", metrics, normalized, horizon_bars, search_replays, spread, seed + 1000,
+        projection_mode, tie_break, seasonality, primary_mode
     )
-    
-    # Determine best direction by Expectancy / Expected R
-    buy_r = buy_res["odds"]["avg_r"]
-    sell_r = sell_res["odds"]["avg_r"]
-    
-    if buy_r > sell_r:
-        best_dir = "BUY"
-        summary = f"Setup BUY LIMIT lebih diunggulkan secara statistik (+{buy_r:.2f}R vs {sell_r:+.2f}R pada durasi ini)."
-    elif sell_r > buy_r:
-        best_dir = "SELL"
-        summary = f"Setup SELL LIMIT lebih diunggulkan secara statistik (+{sell_r:.2f}R vs {buy_r:+.2f}R pada durasi ini)."
-    else:
+    buy_res = _finalize_recommendation(
+        "buy", buy_selected, buy_count, normalized, metrics, horizon_bars,
+        replays, spread, seed, projection_mode, tie_break, seasonality, engine_mode
+    )
+    sell_res = _finalize_recommendation(
+        "sell", sell_selected, sell_count, normalized, metrics, horizon_bars,
+        replays, spread, seed, projection_mode, tie_break, seasonality, engine_mode
+    )
+
+    buy_r = float(buy_res["odds"]["avg_r"])
+    sell_r = float(sell_res["odds"]["avg_r"])
+    viable_buy, viable_sell = buy_r > 0, sell_r > 0
+    if not viable_buy and not viable_sell:
+        best_dir = "NO TRADE"
+        summary = (
+            f"Belum ada setup BUY/SELL dengan simulated expectancy positif "
+            f"(BUY {buy_r:+.2f}R; SELL {sell_r:+.2f}R). Tidak ada rekomendasi entry aktif."
+        )
+    elif viable_buy and viable_sell and abs(buy_r - sell_r) < 0.03:
         best_dir = "EQUAL"
-        summary = "Kedua skenario memiliki ekspektasi statistik seimbang."
-        
+        summary = (
+            f"BUY dan SELL sama-sama memiliki simulated expectancy positif dan relatif seimbang "
+            f"(BUY {buy_r:+.2f}R; SELL {sell_r:+.2f}R). Tunggu konfirmasi kondisi pasar."
+        )
+    elif viable_buy and (not viable_sell or buy_r > sell_r):
+        best_dir = "BUY"
+        summary = f"BUY LIMIT menjadi kandidat teratas ({buy_r:+.2f}R vs SELL {sell_r:+.2f}R)."
+    else:
+        best_dir = "SELL"
+        summary = f"SELL LIMIT menjadi kandidat teratas ({sell_r:+.2f}R vs BUY {buy_r:+.2f}R)."
+
+    if engine_mode == "compare":
+        summary += (
+            f" V2 pada setup yang sama: BUY {buy_res['comparison']['avg_r']:+.2f}R; "
+            f"SELL {sell_res['comparison']['avg_r']:+.2f}R."
+        )
+    summary += (
+        " Probabilitas simulasi bersyarat pada limit entry terisi; fill probability belum dimodelkan."
+    )
     return {
         "metrics": metrics,
         "best_direction": best_dir,
-        "summary": summary + (f" | V1/V2 avg R BUY: {buy_res['odds']['avg_r']:+.2f}/{buy_res['comparison']['avg_r']:+.2f}, SELL: {sell_res['odds']['avg_r']:+.2f}/{sell_res['comparison']['avg_r']:+.2f}." if engine_mode == "compare" else ""),
+        "summary": summary,
         "engine_mode": engine_mode,
+        "search": {
+            "method": "ATR pullback + recent swing-structure candidate grid",
+            "buy_candidates_scanned": buy_count,
+            "sell_candidates_scanned": sell_count,
+            "search_replays_per_candidate": search_replays,
+            "final_replays": replays,
+            "ranking": "simulated average R; target probability and RR are secondary descriptors",
+            "fill_model": "not_estimated"
+        },
         "buy": buy_res,
         "sell": sell_res
     }
 
+
 if __name__ == "__main__":
-    import mt5_connector
     try:
-        bars_data = mt5_connector.get_mt5_gold_bars()
+        bars_data = timemachine.get_gold_bars(source="mt5")
     except Exception:
         bars_data = timemachine.get_gold_bars(source="comex")
-        
-    res = find_dual_recommendations(bars_data, horizon_bars=48, replays=3000)
-    print("Dual Scan Results:")
-    print("Market Price:", res["metrics"]["current_price"])
-    print("Best Direction:", res["best_direction"])
-    print("Summary:", res["summary"])
-    print("\n[BUY LIMIT]")
-    print(f"Entry: ${res['buy']['plan']['entry']} | SL: ${res['buy']['plan']['stop']} | TP: ${res['buy']['plan']['target']}")
-    print(f"Win Rate: {res['buy']['odds']['target_first_pct']}% | Avg R: {res['buy']['odds']['avg_r']:+.2f}R | Verdict: {res['buy']['verdict']}")
-    print("\n[SELL LIMIT]")
-    print(f"Entry: ${res['sell']['plan']['entry']} | SL: ${res['sell']['plan']['stop']} | TP: ${res['sell']['plan']['target']}")
-    print(f"Win Rate: {res['sell']['odds']['target_first_pct']}% | Avg R: {res['sell']['odds']['avg_r']:+.2f}R | Verdict: {res['sell']['verdict']}")
+    result = find_dual_recommendations(bars_data, horizon_bars=48, replays=3000)
+    print("Dual Auto Analyzer:", result["best_direction"])
+    print(result["summary"])
+    for label in ("buy", "sell"):
+        r = result[label]
+        p, o = r["plan"], r["odds"]
+        print(f"{label.upper()} LIMIT: Entry {p['entry']} | SL {p['stop']} | TP {p['target']} | "
+              f"TP-first {o['target_first_pct']:.1f}% | Avg R {o['avg_r']:+.2f}R")
