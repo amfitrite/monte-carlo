@@ -32,6 +32,24 @@ class DualAutoSearchTests(unittest.TestCase):
         self.assertTrue(all(x < metrics["current_price"] for x in buy))
         self.assertTrue(all(x > metrics["current_price"] for x in sell))
 
+    def test_auto_analyzer_runs_end_to_end_with_legacy_engine(self):
+        result = analyzer.find_dual_recommendations(
+            make_bars(), horizon_bars=4, replays=100, engine_mode="legacy"
+        )
+        self.assertIn(result["best_direction"], ("BUY", "SELL", "EQUAL", "NO TRADE"))
+        self.assertEqual(result["buy"]["plan"]["order_type"], "LIMIT")
+        self.assertEqual(result["sell"]["plan"]["order_type"], "LIMIT")
+        self.assertIn("target_r", result["buy"]["plan"])
+        self.assertIn("entry_fill_probability", result["buy"]["plan"])
+
+    def test_auto_analyzer_runs_end_to_end_with_v2_engine(self):
+        result = analyzer.find_dual_recommendations(
+            make_bars(), horizon_bars=4, replays=100, engine_mode="v2"
+        )
+        self.assertEqual(result["engine_mode"], "v2")
+        self.assertIn("ambiguous_pct", result["buy"]["odds"])
+        self.assertEqual(result["sell"]["plan"]["order_type"], "LIMIT")
+
     def test_auto_analyzer_ranks_candidates_and_returns_no_fill_claim(self):
         def fake_run(plan, bars_data, horizon_bars, replays, spread, seed,
                      projection_mode, tie_break, seasonality, engine_mode):
