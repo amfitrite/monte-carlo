@@ -50,6 +50,11 @@ Inspired by Jake Schincariol's `trader-timemachine` from [day-trader-skill](http
   - **Mekanisme:** Menambahkan atribut `highlightthickness=1`, `highlightbackground=PANEL_BG`, dan `highlightcolor=GOLD` pada seluruh form input teks (`Spread`, `Entry`, `SL`, `TP`).
   - **Hasil Uji:** Memberikan feedback visual berupa garis tepi aksen emas (Gold Focus Ring) saat kotak input diklik atau dinavigasi via tombol keyboard `Tab`, meningkatkan kenyamanan UX dan aksesibilitas.
 
+* **3. URL Parameter & File Extension Security Sanitization (`sentinel-security-enhancements`)**:
+  - **Status:** Diusulkan di branch `sentinel-security-enhancements-2644867324483536065` (commit `173a3b6`).
+  - **Mekanisme:** Menggunakan `urllib.parse.urlencode` dan validasi `.isalnum()` untuk mencegah HTTP Parameter Pollution pada Yahoo Finance fetcher, serta memvalidasi ekstensi file `.csv` lokal untuk mencegah arbitrary file traversal.
+  - **Hasil Uji:** Meningkatkan ketahanan dan keamanan input aplikasi dari parameter injection tanpa mempengaruhi alur data.
+
 ---
 
 ## 🚀 Cara Menjalankan
