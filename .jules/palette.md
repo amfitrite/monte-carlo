@@ -1,0 +1,3 @@
+## 2024-03-24 - Focus Indicators on Flat Tkinter Widgets
+**Learning:** In Tkinter, elements with `relief=tk.FLAT` completely lose their default focus outline when navigated via keyboard, making forms completely inaccessible to screen reader/keyboard users.
+**Action:** Always explicitly declare `highlightthickness=1`, `highlightbackground=[unfocused color]`, and `highlightcolor=[focus color]` when using flat styling on interactive Tkinter widgets (Entry, Text, etc).

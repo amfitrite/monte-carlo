@@ -327,7 +327,11 @@ class TimeMachineProGUI:
         f_spr.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(4, 0))
         tk.Label(f_spr, text="Spread ($)", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w")
         self.spread_var = tk.StringVar(value="0.24")
-        self.spread_entry = tk.Entry(f_spr, textvariable=self.spread_var, font=("Segoe UI", 9), bg=INPUT_BG, fg=TEXT_PRIMARY, relief=tk.FLAT)
+        self.spread_entry = tk.Entry(
+            f_spr, textvariable=self.spread_var, font=("Segoe UI", 9),
+            bg=INPUT_BG, fg=TEXT_PRIMARY, relief=tk.FLAT,
+            highlightthickness=1, highlightbackground=PANEL_BG, highlightcolor=GOLD
+        )
         self.spread_entry.pack(fill=tk.X, ipady=2)
 
         # Section 2B: Statistical Methodology Options (User Selectable)
@@ -412,19 +416,31 @@ class TimeMachineProGUI:
         tk.Label(self.manual_sidebar_frame, text="Entry Price ($)", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w")
         self.manual_entry_var = tk.StringVar(value="3875.00")
         self.manual_entry_var.trace_add("write", self._on_manual_price_change)
-        tk.Entry(self.manual_sidebar_frame, textvariable=self.manual_entry_var, font=("Segoe UI", 10), bg=INPUT_BG, fg=TEXT_PRIMARY, relief=tk.FLAT).pack(fill=tk.X, pady=(1, 5), ipady=2)
+        tk.Entry(
+            self.manual_sidebar_frame, textvariable=self.manual_entry_var, font=("Segoe UI", 10),
+            bg=INPUT_BG, fg=TEXT_PRIMARY, relief=tk.FLAT,
+            highlightthickness=1, highlightbackground=PANEL_BG, highlightcolor=GOLD
+        ).pack(fill=tk.X, pady=(1, 5), ipady=2)
 
         # Stop Loss
         tk.Label(self.manual_sidebar_frame, text="Stop Loss ($)", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w")
         self.manual_stop_var = tk.StringVar(value="3850.00")
         self.manual_stop_var.trace_add("write", self._on_manual_price_change)
-        tk.Entry(self.manual_sidebar_frame, textvariable=self.manual_stop_var, font=("Segoe UI", 10), bg=INPUT_BG, fg=RED, relief=tk.FLAT).pack(fill=tk.X, pady=(1, 5), ipady=2)
+        tk.Entry(
+            self.manual_sidebar_frame, textvariable=self.manual_stop_var, font=("Segoe UI", 10),
+            bg=INPUT_BG, fg=RED, relief=tk.FLAT,
+            highlightthickness=1, highlightbackground=PANEL_BG, highlightcolor=GOLD
+        ).pack(fill=tk.X, pady=(1, 5), ipady=2)
 
         # Take Profit
         tk.Label(self.manual_sidebar_frame, text="Take Profit ($)", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w")
         self.manual_target_var = tk.StringVar(value="3925.00")
         self.manual_target_var.trace_add("write", self._on_manual_price_change)
-        tk.Entry(self.manual_sidebar_frame, textvariable=self.manual_target_var, font=("Segoe UI", 10), bg=INPUT_BG, fg=GREEN, relief=tk.FLAT).pack(fill=tk.X, pady=(1, 5), ipady=2)
+        tk.Entry(
+            self.manual_sidebar_frame, textvariable=self.manual_target_var, font=("Segoe UI", 10),
+            bg=INPUT_BG, fg=GREEN, relief=tk.FLAT,
+            highlightthickness=1, highlightbackground=PANEL_BG, highlightcolor=GOLD
+        ).pack(fill=tk.X, pady=(1, 5), ipady=2)
 
         # Manual R:R badge
         self.manual_rr_lbl = tk.Label(
