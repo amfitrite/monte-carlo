@@ -36,14 +36,19 @@ Inspired by Jake Schincariol's `trader-timemachine` from [day-trader-skill](http
 
 ---
 
-## 📋 Catatan Optimasi Komputasi (Review / Pending Merge)
-* **Batching NumPy Percentile Calculations (`bolt-optimize-numpy-percentile`)**:
-  - **Status:** Diusulkan di branch terpisah (`bolt-optimize-numpy-percentile-3643504375201181921`, commit `baef035`).
+## 📋 Catatan Usulan & Review (Pending Merge)
+* **1. Batching NumPy Percentile Calculations (`bolt-optimize-numpy-percentile`)**:
+  - **Status:** Diusulkan di branch `bolt-optimize-numpy-percentile-3643504375201181921` (commit `baef035`).
   - **Mekanisme:** Menggabungkan 5 pemanggilan terpisah `np.percentile` per langkah fan chart menjadi 1 pemanggilan batch array:
     ```python
     p_vals = np.percentile(chart_prices, [5, 25, 50, 75, 95])
     ```
   - **Hasil Uji:** Menghilangkan overhead context-switch Python ↔ C runtime NumPy, menghasilkan efisiensi kecepatan hingga ~70% lebih cepat pada simulasi berat tanpa mengubah nilai/angka probabilitas sama sekali (100% konsisten).
+
+* **2. Keyboard Focus Indicators on Flat Entry Widgets (`palette/tkinter-focus-indicators`)**:
+  - **Status:** Diusulkan di branch `palette/tkinter-focus-indicators-5926559478229968170` (commit `b397491`).
+  - **Mekanisme:** Menambahkan atribut `highlightthickness=1`, `highlightbackground=PANEL_BG`, dan `highlightcolor=GOLD` pada seluruh form input teks (`Spread`, `Entry`, `SL`, `TP`).
+  - **Hasil Uji:** Memberikan feedback visual berupa garis tepi aksen emas (Gold Focus Ring) saat kotak input diklik atau dinavigasi via tombol keyboard `Tab`, meningkatkan kenyamanan UX dan aksesibilitas.
 
 ---
 
