@@ -1,0 +1,16 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Market data caches (auto-generated on run)
+data_cache*.json
+
+# Virtual environment
+venv/
+env/
+.env
+
+# Editor files
+.vscode/
+.idea/
