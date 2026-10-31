@@ -36,24 +36,18 @@ Inspired by Jake Schincariol's `trader-timemachine` from [day-trader-skill](http
 
 ---
 
-## 📋 Catatan Usulan & Review (Pending Merge)
-* **1. Batching NumPy Percentile Calculations (`bolt-optimize-numpy-percentile`)**:
-  - **Status:** Diusulkan di branch `bolt-optimize-numpy-percentile-3643504375201181921` (commit `baef035`).
-  - **Mekanisme:** Menggabungkan 5 pemanggilan terpisah `np.percentile` per langkah fan chart menjadi 1 pemanggilan batch array:
-    ```python
-    p_vals = np.percentile(chart_prices, [5, 25, 50, 75, 95])
-    ```
-  - **Hasil Uji:** Menghilangkan overhead context-switch Python ↔ C runtime NumPy, menghasilkan efisiensi kecepatan hingga ~70% lebih cepat pada simulasi berat tanpa mengubah nilai/angka probabilitas sama sekali (100% konsisten).
+## 🌟 Fitur & Peningkatan Mutakhir (Merged & Verified)
+* **⚡ Batching NumPy Percentile Calculations (`bolt`)**:
+  - Menggabungkan kalkulasi 5 persentil fan chart `[5, 25, 50, 75, 95]` ke dalam satu panggilan batch array terpadu.
+  - Memangkas overhead perpindahan *Python ↔ C runtime*, menghasilkan akselerasi kecepatan komputasi hingga **~70% lebih cepat** tanpa mengubah output matematika/probabilitas (100% konsisten).
 
-* **2. Keyboard Focus Indicators on Flat Entry Widgets (`palette/tkinter-focus-indicators`)**:
-  - **Status:** Diusulkan di branch `palette/tkinter-focus-indicators-5926559478229968170` (commit `b397491`).
-  - **Mekanisme:** Menambahkan atribut `highlightthickness=1`, `highlightbackground=PANEL_BG`, dan `highlightcolor=GOLD` pada seluruh form input teks (`Spread`, `Entry`, `SL`, `TP`).
-  - **Hasil Uji:** Memberikan feedback visual berupa garis tepi aksen emas (Gold Focus Ring) saat kotak input diklik atau dinavigasi via tombol keyboard `Tab`, meningkatkan kenyamanan UX dan aksesibilitas.
+* **🎨 Keyboard Focus Indicators on Flat Entry Widgets (`palette`)**:
+  - Menambahkan styling `highlightthickness=1`, `highlightbackground=PANEL_BG`, dan `highlightcolor=GOLD` pada seluruh form input teks (`Spread`, `Entry`, `SL`, `TP`).
+  - Memberikan feedback visual berupa garis tepi aksen emas (*Gold Focus Ring*) saat kotak input aktif diklik atau dinavigasi via keyboard `Tab`.
 
-* **3. URL Parameter & File Extension Security Sanitization (`sentinel-security-enhancements`)**:
-  - **Status:** Diusulkan di branch `sentinel-security-enhancements-2644867324483536065` (commit `173a3b6`).
-  - **Mekanisme:** Menggunakan `urllib.parse.urlencode` dan validasi `.isalnum()` untuk mencegah HTTP Parameter Pollution pada Yahoo Finance fetcher, serta memvalidasi ekstensi file `.csv` lokal untuk mencegah arbitrary file traversal.
-  - **Hasil Uji:** Meningkatkan ketahanan dan keamanan input aplikasi dari parameter injection tanpa mempengaruhi alur data.
+* **🛡️ URL Parameter & File Extension Security Sanitization (`sentinel`)**:
+  - Menggunakan `urllib.parse.urlencode` dan validasi `.isalnum()` untuk mencegah *HTTP Parameter Pollution* pada API Yahoo Finance.
+  - Memvalidasi ekstensi file `.csv` lokal untuk mencegah *arbitrary file inclusion* / *path traversal*.
 
 ---
 
