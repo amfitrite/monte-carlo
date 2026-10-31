@@ -113,9 +113,9 @@ def run_simulation(entry_price, stop_loss, take_profit, side="buy",
         exits[hit_tp] = take_profit
         active[hit_sl | hit_tp] = False
         exits[active] = market[active]
-        for j, idx in enumerate(sample_ids):
-            paths[j].append(float(market[idx]))
         if step in checkpoints or step == horizon_bars - 1:
+            for j, idx in enumerate(sample_ids):
+                paths[j].append(float(market[idx]))
             vals = np.percentile(market, [5, 25, 50, 75, 95])
             fan["step_bars"].append(step + 1)
             for key, val in zip(("p5", "p25", "p50", "p75", "p95"), vals):
