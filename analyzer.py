@@ -6,8 +6,8 @@ Dual Auto Analyzer does the inverse: it searches a candidate grid for BUY LIMIT
 and SELL LIMIT setups, ranks candidates by simulated expectancy, then evaluates
 the selected candidates with the chosen Monte Carlo engine.
 
-Important limitation: OHLC-only simulations assume the proposed limit entry is
-filled. They do not estimate the probability or timing of that fill.
+Important limitation: historical OHLC touch rates are only a fill proxy. They do
+not model queue priority, bid/ask execution, liquidity, or guaranteed fills.
 """
 import numpy as np
 import timemachine
@@ -76,6 +76,66 @@ def _candidate_entries(side, metrics):
     return valid[:5]
 
 
+
+def _estimate_entry_touch(bars, side, entry_distance_atr, horizon_bars,
+                          atr_period=14, max_samples=500):
+    """Estimate historical price-touch frequency for the same ATR-normalized limit distance.
+
+    This is a touch proxy, not an exchange/broker fill probability. It assumes a
+    touch of the OHLC extreme is sufficient and cannot model queue priority.
+    """
+    n = len(bars)
+    horizon = max(1, int(horizon_bars))
+    period = max(2, int(atr_period))
+    if n <= period + horizon:
+        return {
+            "touch_probability_pct": 0.0, "touches": 0, "samples": 0,
+            "median_bars_to_touch": None, "distance_atr": float(entry_distance_atr)
+        }
+
+    highs = np.asarray([b["high"] for b in bars], dtype=float)
+    lows = np.asarray([b["low"] for b in bars], dtype=float)
+    closes = np.asarray([b["close"] for b in bars], dtype=float)
+    prev = np.r_[closes[0], closes[:-1]]
+    true_ranges = np.maximum(highs - lows,
+        np.maximum(np.abs(highs - prev), np.abs(lows - prev)))
+
+    # Use historical anchor bars with a complete, strictly forward observation window.
+    indices = np.arange(period - 1, n - horizon - 1, dtype=int)
+    if len(indices) > max_samples:
+        pick = np.linspace(0, len(indices) - 1, max_samples, dtype=int)
+        indices = indices[pick]
+
+    touched_times = []
+    for idx in indices:
+        atr = float(np.mean(true_ranges[idx - period + 1:idx + 1]))
+        if not np.isfinite(atr) or atr <= 0:
+            continue
+        anchor = closes[idx]
+        if side == "buy":
+            limit_level = anchor - float(entry_distance_atr) * atr
+            future = np.flatnonzero(lows[idx + 1:idx + 1 + horizon] <= limit_level)
+        else:
+            limit_level = anchor + float(entry_distance_atr) * atr
+            future = np.flatnonzero(highs[idx + 1:idx + 1 + horizon] >= limit_level)
+        if len(future):
+            touched_times.append(int(future[0]) + 1)
+
+    samples = len(indices)
+    touches = len(touched_times)
+    # Beta(1,1) smoothing avoids reporting exact 0% or 100% from a small sample.
+    probability = (touches + 1.0) / (samples + 2.0) if samples else 0.0
+    return {
+        "touch_probability_pct": probability * 100.0,
+        "touches": touches,
+        "samples": samples,
+        "median_bars_to_touch": (
+            float(np.median(touched_times)) if touched_times else None
+        ),
+        "distance_atr": float(entry_distance_atr)
+    }
+
+
 def _build_plan(side, entry, metrics, risk_atr, rr, interval_minutes):
     atr = metrics["atr"]
     if side == "buy":
@@ -113,12 +173,14 @@ def _run_one(plan, bars_data, horizon_bars, replays, spread, seed,
     )
 
 
-def _rank_score(result):
+def _rank_score(result, touch_stats):
     odds = result["odds"]
-    # Expected R is the primary objective; target-first probability and RR are
-    # tie-breakers, not substitutes for expectancy.
-    return (float(odds["avg_r"]), float(odds["target_first_pct"]),
-            float(result["plan"]["target_r"]))
+    # Expected R is conditional on entry. Weight it by historical touch frequency
+    # to penalize attractive-looking limits that are rarely reached in the horizon.
+    touch_rate = float(touch_stats["touch_probability_pct"]) / 100.0
+    adjusted_r = float(odds["avg_r"]) * touch_rate
+    return (adjusted_r, touch_rate, float(odds["avg_r"]),
+            float(odds["target_first_pct"]), float(result["plan"]["target_r"]))
 
 
 def _scan_side(side, metrics, bars_data, horizon_bars, search_replays, spread,
@@ -137,7 +199,11 @@ def _scan_side(side, metrics, bars_data, horizon_bars, search_replays, spread,
                     plan, bars_data, horizon_bars, search_replays, spread,
                     seed + index, projection_mode, tie_break, seasonality, engine_mode
                 )
-                candidates.append(( _rank_score(result), plan, result))
+                distance_atr = abs(metrics["current_price"] - entry) / metrics["atr"]
+                touch = _estimate_entry_touch(
+                    bars_data["bars"], side, distance_atr, horizon_bars
+                )
+                candidates.append((_rank_score(result, touch), plan, result, touch))
                 index += 1
     candidates.sort(key=lambda x: x[0], reverse=True)
     if not candidates:
@@ -148,7 +214,7 @@ def _scan_side(side, metrics, bars_data, horizon_bars, search_replays, spread,
 def _finalize_recommendation(side, selected, candidate_count, bars_data,
                              metrics, horizon_bars, replays, spread, seed,
                              projection_mode, tie_break, seasonality, engine_mode):
-    _, plan, coarse = selected
+    _, plan, coarse, touch = selected
     # Re-run the winning candidate at the requested replay count.
     primary_mode = "legacy" if engine_mode == "compare" else engine_mode
     result = _run_one(
@@ -179,12 +245,16 @@ def _finalize_recommendation(side, selected, candidate_count, bars_data,
     )
     result["recommendation"] = {
         "status": "candidate" if result["odds"]["avg_r"] > 0 else "no_positive_expectancy",
-        "ranking_metric": "simulated_average_R",
+        "ranking_metric": "touch_adjusted_simulated_average_R",
         "simulated_average_R": result["odds"]["avg_r"],
+        "touch_adjusted_simulated_average_R": adjusted_r,
         "target_first_probability_pct": result["odds"]["target_first_pct"],
         "breakeven_probability_pct": result["odds"]["breakeven_pct"],
         "fill_probability": None,
-        "warning": "Outcome probabilities are conditional on entry fill and are not live calibrated probabilities."
+        "historical_touch_probability_pct": result["plan"]["entry_touch_probability_pct"],
+        "historical_touch_samples": result["plan"]["entry_touch_samples"],
+        "median_bars_to_touch": result["plan"]["median_bars_to_touch"],
+        "warning": "Touch rate is a historical OHLC proxy, not actual fill probability. TP/SL odds are conditional on fill and are not live calibrated."
     }
     return result
 
@@ -237,8 +307,8 @@ def find_dual_recommendations(
         replays, spread, seed, projection_mode, tie_break, seasonality, engine_mode
     )
 
-    buy_r = float(buy_res["odds"]["avg_r"])
-    sell_r = float(sell_res["odds"]["avg_r"])
+    buy_r = float(buy_res["plan"]["fill_adjusted_simulated_avg_r"])
+    sell_r = float(sell_res["plan"]["fill_adjusted_simulated_avg_r"])
     viable_buy, viable_sell = buy_r > 0, sell_r > 0
     if not viable_buy and not viable_sell:
         best_dir = "NO TRADE"
@@ -265,7 +335,8 @@ def find_dual_recommendations(
             f"SELL {sell_res['comparison']['avg_r']:+.2f}R."
         )
     summary += (
-        " Probabilitas simulasi bersyarat pada limit entry terisi; fill probability belum dimodelkan."
+        " Touch rate berasal dari frekuensi sentuhan level pada OHLC historis; "
+        "bukan jaminan order terisi atau probabilitas fill broker."
     )
     return {
         "metrics": metrics,
@@ -279,7 +350,7 @@ def find_dual_recommendations(
             "search_replays_per_candidate": search_replays,
             "final_replays": replays,
             "ranking": "simulated average R; target probability and RR are secondary descriptors",
-            "fill_model": "not_estimated"
+            "fill_model": "historical_ohlc_touch_proxy_not_broker_fill_probability"
         },
         "buy": buy_res,
         "sell": sell_res
