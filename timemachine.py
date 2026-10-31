@@ -13,6 +13,7 @@ import time
 import datetime
 import argparse
 import urllib.request
+import urllib.parse
 import urllib.error
 import numpy as np
 
@@ -21,7 +22,12 @@ DEFAULT_CACHE_TTL_SECONDS = 1800  # 30 minutes
 
 def fetch_yahoo_gold_data(range_days=60, interval="5m"):
     """Fetch 60-day 5-minute bars for COMEX Gold Futures (GC=F) from Yahoo Finance."""
-    url = f"https://query2.finance.yahoo.com/v8/finance/chart/GC=F?range={range_days}d&interval={interval}"
+    # Input validation to prevent parameter injection
+    if not str(range_days).isalnum() or not str(interval).isalnum():
+        raise ValueError("Invalid parameters for Yahoo Finance API.")
+
+    params = urllib.parse.urlencode({"range": f"{range_days}d", "interval": interval})
+    url = f"https://query2.finance.yahoo.com/v8/finance/chart/GC=F?{params}"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     req = urllib.request.Request(url, headers=headers)
     try:
@@ -29,7 +35,7 @@ def fetch_yahoo_gold_data(range_days=60, interval="5m"):
             data = json.loads(response.read().decode("utf-8"))
     except Exception:
         # Fallback to query1
-        url_fallback = f"https://query1.finance.yahoo.com/v8/finance/chart/GC=F?range={range_days}d&interval={interval}"
+        url_fallback = f"https://query1.finance.yahoo.com/v8/finance/chart/GC=F?{params}"
         req_fallback = urllib.request.Request(url_fallback, headers=headers)
         with urllib.request.urlopen(req_fallback, timeout=12) as response:
             data = json.loads(response.read().decode("utf-8"))
@@ -65,6 +71,10 @@ def fetch_yahoo_gold_data(range_days=60, interval="5m"):
 def get_gold_bars(source="comex", symbol=None, csv_path=None, force_refresh=False, timeframe="M5"):
     """Load gold data from COMEX (Yahoo), MT5, or CSV."""
     if csv_path and os.path.exists(csv_path):
+        # Security: Enforce CSV extension to prevent executing/reading malicious files
+        if not csv_path.lower().endswith('.csv'):
+            raise ValueError("Invalid file extension. Only .csv files are allowed.")
+
         import csv
         bars = []
         with open(csv_path, mode="r", encoding="utf-8-sig") as f:

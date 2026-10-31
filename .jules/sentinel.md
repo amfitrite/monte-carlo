@@ -1,0 +1,4 @@
+## 2024-10-31 - [URL Parameter Pollution & Path Traversal]
+**Vulnerability:** Yahoo Finance API parameters were directly interpolated into the URL string (`range_days` and `interval`). `csv_path` could accept non-CSV extensions and absolute paths leading to potential path traversal if exposed.
+**Learning:** Even in local desktop applications (like this Tkinter app), it's critical to validate and sanitize inputs. If the application logic ever allows user-provided values for these variables or is later exposed as an API, it could lead to HTTP Parameter Pollution or arbitrary file read.
+**Prevention:** Use `urllib.parse.urlencode` to securely build URL query strings. Use `.isalnum()` for alphanumeric validation of URL params. Enforce explicit file extension checks (`endswith('.csv')`) and strip absolute paths or traversing sequences (`..`) when accepting file paths as input.
