@@ -24,6 +24,7 @@ except Exception:
     pass
 
 import timemachine
+import engine_v2
 import mt5_connector
 import analyzer
 
@@ -354,7 +355,17 @@ class TimeMachineProGUI:
         method_card = tk.Frame(self.left_panel, bg=CARD_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
         method_card.pack(fill=tk.X, pady=(0, 10))
 
-        tk.Label(method_card, text="⚙️ STATISTICAL METHODOLOGY", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=CARD_BG).pack(anchor="w")
+        tk.Label(method_card, text="⚙️ ENGINE SELECTION", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=CARD_BG).pack(anchor="w")
+        self.engine_mode_var = tk.StringVar(value="Legacy V1 (Default)")
+        self.engine_mode_combo = ttk.Combobox(
+            method_card, textvariable=self.engine_mode_var,
+            values=["Legacy V1 (Default)", "Enhanced OHLC V2", "Compare V1 vs V2"],
+            state="readonly", font=("Segoe UI", 8)
+        )
+        self.engine_mode_combo.pack(fill=tk.X, pady=(4, 6))
+        tk.Label(method_card, text="V2 uses block bootstrap + conservative same-bar collision handling. Compare mode keeps V1 as the displayed baseline.", font=("Segoe UI", 7), fg=TEXT_MUTED, bg=CARD_BG, wraplength=280, justify=tk.LEFT).pack(anchor="w", pady=(0, 5))
+
+        tk.Label(method_card, text="⚙️ LEGACY V1 METHODOLOGY OPTIONS", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=CARD_BG).pack(anchor="w")
 
         tk.Label(method_card, text="Fan Chart Projection", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w", pady=(4, 1))
         self.proj_mode_var = tk.StringVar(value="Two-Stream Free Drift (Recommended)")
@@ -697,7 +708,8 @@ class TimeMachineProGUI:
                     spread=spread,
                     projection_mode=proj_mode,
                     tie_break=tb_mode,
-                    seasonality=season_mode
+                    seasonality=season_mode,
+                    engine_mode={"Legacy V1 (Default)": "legacy", "Enhanced OHLC V2": "v2", "Compare V1 vs V2": "compare"}.get(self.engine_mode_var.get(), "legacy")
                 )
                 self.root.after(0, lambda: self._apply_dual_results(res))
             except Exception as e:
@@ -905,7 +917,7 @@ class TimeMachineProGUI:
 
         def worker():
             try:
-                res = timemachine.run_simulation(
+                params = dict(
                     entry_price=entry,
                     stop_loss=stop,
                     take_profit=target,
@@ -918,6 +930,14 @@ class TimeMachineProGUI:
                     tie_break=self.current_tie_break,
                     seasonality=self.current_seasonality
                 )
+                mode = {"Legacy V1 (Default)": "legacy", "Enhanced OHLC V2": "v2", "Compare V1 vs V2": "compare"}.get(self.engine_mode_var.get(), "legacy")
+                if mode == "v2":
+                    res = engine_v2.run_simulation(**{k: v for k, v in params.items() if k not in ("projection_mode", "tie_break", "seasonality")})
+                else:
+                    res = timemachine.run_simulation(**params)
+                    if mode == "compare":
+                        v2 = engine_v2.run_simulation(**{k: v for k, v in params.items() if k not in ("projection_mode", "tie_break", "seasonality")})
+                        res["comparison"] = {"engine": "Enhanced V2", "target_first_pct": v2["odds"]["target_first_pct"], "avg_r": v2["odds"]["avg_r"], "ambiguous_pct": v2["odds"].get("ambiguous_pct", 0.0), "optimistic_target_first_pct": v2["odds"].get("optimistic_target_first_pct", 0.0)}
                 self.root.after(0, lambda: self._apply_manual_results(res))
             except Exception as e:
                 self.root.after(0, lambda: messagebox.showerror("Simulation Error", str(e)))
@@ -938,7 +958,10 @@ class TimeMachineProGUI:
         self.m_card_r.configure(text=f"{r_sign}{avg_r:.2f} R", fg=GREEN if avg_r > 0 else (RED if avg_r < 0 else GOLD))
 
         v = res["verdict"]
-        col = GREEN if "Target" in v else (RED if "Stop Loss" in v else GOLD)
+        comparison = res.get("comparison")
+        if comparison:
+            v += f" | V2: TP {comparison['target_first_pct']:.1f}% / Avg {comparison['avg_r']:+.2f}R / Ambiguous {comparison['ambiguous_pct']:.1f}%"
+        col = GREEN if "Positive simulated expectancy" in v or ("Target" in v and "Stop Loss" not in v) else (RED if "Stop Loss" in v else GOLD)
         self.m_verdict_lbl.configure(text=f"⚖️ {v}", fg=col)
         self._draw_manual_chart()
 
@@ -999,6 +1022,7 @@ class TimeMachineProGUI:
             "projection_mode": self.proj_mode_var.get(),
             "tie_break": self.tie_break_var.get(),
             "seasonality": self.seasonality_var.get(),
+            "engine_mode": self.engine_mode_var.get(),
             "manual_direction": self.direction_var.get(),
             "manual_entry": self.manual_entry_var.get(),
             "manual_stop": self.manual_stop_var.get(),
@@ -1040,6 +1064,11 @@ class TimeMachineProGUI:
             saved_spread = settings.get("spread")
             if saved_spread:
                 self.spread_var.set(saved_spread)
+
+            # Restore engine selection; old settings remain Legacy V1 by default.
+            saved_engine = settings.get("engine_mode", "Legacy V1 (Default)")
+            if saved_engine in self.engine_mode_combo["values"]:
+                self.engine_mode_var.set(saved_engine)
 
             # Restore Statistical Methodology
             saved_pm = settings.get("projection_mode")
