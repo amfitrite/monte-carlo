@@ -52,13 +52,13 @@ def find_dual_recommendations(
     Returns full Monte Carlo results for both directions using specified statistical methodology.
     """
     def run_engine(**params):
-        legacy = timemachine.run_simulation(**params)
         if engine_mode == "legacy":
-            return legacy
+            return timemachine.run_simulation(**params)
         enhanced = engine_v2.run_simulation(**{k: v for k, v in params.items()
                                                 if k not in ("projection_mode", "tie_break", "seasonality")})
         if engine_mode == "v2":
             return enhanced
+        legacy = timemachine.run_simulation(**params)
         legacy["comparison"] = {
             "engine": "Enhanced V2",
             "target_first_pct": enhanced["odds"]["target_first_pct"],
