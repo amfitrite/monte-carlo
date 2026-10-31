@@ -335,11 +335,13 @@ def run_simulation(
             
         if step in step_indices or step == horizon_bars - 1:
             fan_data["step_bars"].append(step + 1)
-            fan_data["p5"].append(float(np.percentile(chart_prices, 5)))
-            fan_data["p25"].append(float(np.percentile(chart_prices, 25)))
-            fan_data["p50"].append(float(np.percentile(chart_prices, 50)))
-            fan_data["p75"].append(float(np.percentile(chart_prices, 75)))
-            fan_data["p95"].append(float(np.percentile(chart_prices, 95)))
+            # Batch calculate percentiles to reduce overhead (Performance Optimization)
+            p_vals = np.percentile(chart_prices, [5, 25, 50, 75, 95])
+            fan_data["p5"].append(float(p_vals[0]))
+            fan_data["p25"].append(float(p_vals[1]))
+            fan_data["p50"].append(float(p_vals[2]))
+            fan_data["p75"].append(float(p_vals[3]))
+            fan_data["p95"].append(float(p_vals[4]))
             
     neither_mask = (results == 0)
     exit_prices[neither_mask] = market_prices[neither_mask]
