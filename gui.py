@@ -736,11 +736,11 @@ class TimeMachineProGUI:
         b_sign = "+" if bo["avg_r"] > 0 else ""
         s_sign = "+" if so["avg_r"] > 0 else ""
         self.buy_odds_lbl.configure(
-            text=f"Target: {bo['target_first_pct']:.1f}% | Return: {b_sign}{bo['avg_r']:.2f} R",
+            text=f"TP: {bo['target_first_pct']:.1f}% | RR: 1:{res['buy']['plan']['target_r']:.2f} | Exp: {b_sign}{bo['avg_r']:.2f}R",
             fg=GREEN if bo["avg_r"] > 0 else TEXT_MUTED
         )
         self.sell_odds_lbl.configure(
-            text=f"Target: {so['target_first_pct']:.1f}% | Return: {s_sign}{so['avg_r']:.2f} R",
+            text=f"TP: {so['target_first_pct']:.1f}% | RR: 1:{res['sell']['plan']['target_r']:.2f} | Exp: {s_sign}{so['avg_r']:.2f}R",
             fg=RED if so["avg_r"] > 0 else TEXT_MUTED
         )
 
@@ -867,7 +867,7 @@ class TimeMachineProGUI:
         # Target & Stop lines
         y_tp = to_y(target)
         canvas.create_line(pad_left, y_tp, w - pad_right, y_tp, fill=GREEN, width=2, dash=(6, 4))
-        canvas.create_text(w - pad_right, y_tp - 10, text=f"TP ${target:.2f} (+2.0R)", fill=GREEN, font=("Segoe UI", 9, "bold"), anchor="e")
+        canvas.create_text(w - pad_right, y_tp - 10, text=f"TP ${target:.2f} (+{plan.get('target_r', 0.0):.2f}R)", fill=GREEN, font=("Segoe UI", 9, "bold"), anchor="e")
 
         y_sl = to_y(stop)
         canvas.create_line(pad_left, y_sl, w - pad_right, y_sl, fill=RED, width=2, dash=(6, 4))
