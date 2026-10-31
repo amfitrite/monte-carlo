@@ -73,7 +73,7 @@ def _candidate_entries(side, metrics):
     if not valid:
         valid = [round(cur - 0.5 * atr, 2) if side == "buy"
                  else round(cur + 0.5 * atr, 2)]
-    return valid[:6]
+    return valid[:5]
 
 
 def _build_plan(side, entry, metrics, risk_atr, rr, interval_minutes):
@@ -125,8 +125,8 @@ def _scan_side(side, metrics, bars_data, horizon_bars, search_replays, spread,
                seed, projection_mode, tie_break, seasonality, engine_mode):
     interval = int(bars_data.get("interval_minutes", 5) or 5)
     entries = _candidate_entries(side, metrics)
-    risk_multipliers = (0.75, 1.0, 1.25)
-    rr_values = (1.25, 1.5, 2.0)
+    risk_multipliers = (0.80, 1.10)
+    rr_values = (1.50, 2.0)
     candidates = []
     index = 0
     for entry in entries:
@@ -217,7 +217,7 @@ def find_dual_recommendations(
 
     horizon_bars = max(1, int(horizon_bars))
     replays = max(100, int(replays))
-    search_replays = min(replays, 1200)
+    search_replays = min(replays, 600)
     primary_mode = "legacy" if engine_mode == "compare" else engine_mode
 
     buy_selected, buy_count = _scan_side(
