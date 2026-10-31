@@ -236,12 +236,19 @@ def _finalize_recommendation(side, selected, candidate_count, bars_data,
             "ambiguous_pct": v2["odds"].get("ambiguous_pct", 0.0),
             "optimistic_target_first_pct": v2["odds"].get("optimistic_target_first_pct", 0.0)
         }
+    touch_rate = float(touch["touch_probability_pct"]) / 100.0
+    adjusted_r = float(result["odds"]["avg_r"]) * touch_rate
+
     result["plan"]["order_type"] = "LIMIT"
     result["plan"]["candidate_count_scanned"] = candidate_count
     result["plan"]["candidate_search_replays"] = int(coarse["plan"]["replays"])
     result["plan"]["entry_fill_probability"] = None
+    result["plan"]["entry_touch_probability_pct"] = float(touch["touch_probability_pct"])
+    result["plan"]["entry_touch_samples"] = int(touch["samples"])
+    result["plan"]["median_bars_to_touch"] = touch["median_bars_to_touch"]
+    result["plan"]["fill_adjusted_simulated_avg_r"] = adjusted_r
     result["plan"]["entry_fill_assumption"] = (
-        "Conditional on the proposed limit order being filled; OHLC scan does not estimate fill probability."
+        "Conditional on the proposed limit order being filled; historical OHLC touch proxy does not guarantee fill."
     )
     result["recommendation"] = {
         "status": "candidate" if result["odds"]["avg_r"] > 0 else "no_positive_expectancy",
