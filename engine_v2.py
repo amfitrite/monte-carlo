@@ -67,6 +67,9 @@ def run_simulation(entry_price, stop_loss, take_profit, side="buy",
     spread, block_length = max(0.0, float(spread)), max(2, int(block_length))
     risk = abs(entry_price - stop_loss)
     reward = abs(take_profit - entry_price)
+    direction_ok = (stop_loss < entry_price < take_profit) if side == "buy" else (take_profit < entry_price < stop_loss)
+    if not direction_ok:
+        raise ValueError("For BUY use SL < entry < TP; for SELL use TP < entry < SL.")
     if risk <= 0 or reward <= 0 or horizon_bars < 1 or replays < 100:
         raise ValueError("Invalid risk/reward, horizon, or replay count.")
     if bars_data is None:
