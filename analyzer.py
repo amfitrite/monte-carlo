@@ -350,7 +350,7 @@ def find_dual_recommendations(
             "search_replays_per_candidate": search_replays,
             "final_replays": replays,
             "ranking": "simulated average R; target probability and RR are secondary descriptors",
-            "fill_model": "not_estimated"
+            "fill_model": "historical_ohlc_touch_proxy_not_broker_fill_probability"
         },
         "buy": buy_res,
         "sell": sell_res
