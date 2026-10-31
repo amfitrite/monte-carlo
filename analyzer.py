@@ -6,6 +6,7 @@ evaluates both simultaneously via Monte Carlo simulation, and outputs dual visua
 
 import numpy as np
 import timemachine
+import engine_v2
 
 def calculate_market_metrics(bars, period=48):
     """Calculate ATR and recent swing levels from historical bars."""
@@ -43,12 +44,32 @@ def find_dual_recommendations(
     seed=19,
     projection_mode="free_drift",
     tie_break="smart",
-    seasonality=False
+    seasonality=False,
+    engine_mode="legacy"
 ):
     """
     Simultaneously optimizes and evaluates both BUY LIMIT and SELL LIMIT setups.
     Returns full Monte Carlo results for both directions using specified statistical methodology.
     """
+    def run_engine(**params):
+        legacy = timemachine.run_simulation(**params)
+        if engine_mode == "legacy":
+            return legacy
+        enhanced = engine_v2.run_simulation(**{k: v for k, v in params.items()
+                                                if k not in ("projection_mode", "tie_break", "seasonality")})
+        if engine_mode == "v2":
+            return enhanced
+        legacy["comparison"] = {
+            "engine": "Enhanced V2",
+            "target_first_pct": enhanced["odds"]["target_first_pct"],
+            "stop_first_pct": enhanced["odds"]["stop_first_pct"],
+            "neither_pct": enhanced["odds"]["neither_pct"],
+            "avg_r": enhanced["odds"]["avg_r"],
+            "ambiguous_pct": enhanced["odds"].get("ambiguous_pct", 0.0),
+            "optimistic_target_first_pct": enhanced["odds"].get("optimistic_target_first_pct", 0.0)
+        }
+        return legacy
+
     bars = bars_data.get("bars", [])
     if len(bars) < 100:
         raise ValueError("Not enough bars to scan setups.")
@@ -80,7 +101,7 @@ def find_dual_recommendations(
     buy_reward = round(buy_risk * 2.0, 2)
     buy_target = round(buy_entry + buy_reward, 2)
     
-    buy_res = timemachine.run_simulation(
+    buy_res = run_engine(
         entry_price=buy_entry,
         stop_loss=buy_stop,
         take_profit=buy_target,
@@ -108,7 +129,7 @@ def find_dual_recommendations(
     sell_reward = round(sell_risk * 2.0, 2)
     sell_target = round(sell_entry - sell_reward, 2)
     
-    sell_res = timemachine.run_simulation(
+    sell_res = run_engine(
         entry_price=sell_entry,
         stop_loss=sell_stop,
         take_profit=sell_target,
@@ -140,7 +161,8 @@ def find_dual_recommendations(
     return {
         "metrics": metrics,
         "best_direction": best_dir,
-        "summary": summary,
+        "summary": summary + (f" | V1/V2 avg R BUY: {buy_res['odds']['avg_r']:+.2f}/{buy_res['comparison']['avg_r']:+.2f}, SELL: {sell_res['odds']['avg_r']:+.2f}/{sell_res['comparison']['avg_r']:+.2f}." if engine_mode == "compare" else ""),
+        "engine_mode": engine_mode,
         "buy": buy_res,
         "sell": sell_res
     }
