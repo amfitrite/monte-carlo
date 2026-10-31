@@ -41,6 +41,8 @@ class DualAutoSearchTests(unittest.TestCase):
         self.assertEqual(result["sell"]["plan"]["order_type"], "LIMIT")
         self.assertIn("target_r", result["buy"]["plan"])
         self.assertIn("entry_fill_probability", result["buy"]["plan"])
+        self.assertIn("entry_touch_probability_pct", result["buy"]["plan"])
+        self.assertIn("fill_adjusted_simulated_avg_r", result["buy"]["plan"])
 
     def test_auto_analyzer_runs_end_to_end_with_v2_engine(self):
         result = analyzer.find_dual_recommendations(
@@ -79,7 +81,11 @@ class DualAutoSearchTests(unittest.TestCase):
                 "sample_paths": []
             }
 
-        with patch.object(analyzer, "_run_one", side_effect=fake_run) as mocked:
+        with patch.object(analyzer, "_run_one", side_effect=fake_run) as mocked, \
+             patch.object(analyzer, "_estimate_entry_touch", return_value={
+                 "touch_probability_pct": 75.0, "touches": 75, "samples": 100,
+                 "median_bars_to_touch": 3.0, "distance_atr": 0.5
+             }):
             result = analyzer.find_dual_recommendations(
                 make_bars(), horizon_bars=12, replays=100,
                 engine_mode="legacy"
@@ -88,7 +94,8 @@ class DualAutoSearchTests(unittest.TestCase):
         self.assertGreater(result["search"]["buy_candidates_scanned"], 1)
         self.assertGreater(result["search"]["sell_candidates_scanned"], 1)
         self.assertIsNone(result["buy"]["plan"]["entry_fill_probability"])
-        self.assertIn("Conditional", result["buy"]["plan"]["entry_fill_assumption"])
+        self.assertEqual(result["buy"]["plan"]["entry_touch_probability_pct"], 75.0)
+        self.assertIn("historical OHLC touch proxy", result["buy"]["plan"]["entry_fill_assumption"])
         self.assertGreater(mocked.call_count, 4)
 
 
