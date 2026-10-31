@@ -74,3 +74,35 @@ python timemachine.py --source mt5 --horizon 4h --replays 5000 --projection-mode
 # Jalankan simulasi manual dengan metodologi asli/baseline (untuk membandingkan)
 python timemachine.py --source mt5 --horizon 4h --replays 5000 --projection-mode frozen --tie-break conservative
 ```
+
+
+## 🧪 Enhanced OHLC V2 (Optional)
+
+Legacy V1 remains intact and is still the default engine for existing users and
+new installations. The GUI engine selector offers:
+
+- **Legacy V1 (Default):** unchanged original simulation path.
+- **Enhanced OHLC V2:** contiguous block-bootstrap sampling of historical OHLC
+  returns, preserving local sequence inside sampled blocks.
+- **Compare V1 vs V2:** runs both engines against the same generated entry,
+  stop, target, horizon, spread assumption, and input history. V1 remains the
+  displayed baseline; V2 comparison statistics are shown alongside it.
+
+V2 does not infer the order of high/low touches from candle color. If one OHLC
+bar touches both TP and SL, the primary V2 estimate counts the outcome as
+stop-first and reports the optimistic TP-first bound separately. The true
+intrabar order remains unknown without lower-timeframe or tick data.
+
+**Important:** Compare mode compares two simulation methodologies, not their
+real-world predictive accuracy. Neither engine is calibrated or validated by
+this comparison alone. To establish trading usefulness, run chronological
+walk-forward tests against unseen historical outcomes and include realistic
+spread, commission, slippage, limit-order fill probability, and execution
+constraints. V2's block length is configurable in the engine API (default 10
+bars); it is a modeling parameter, not a proven optimum.
+
+Run the unit tests with:
+
+```bash
+python -m unittest discover -s tests -v
+```
