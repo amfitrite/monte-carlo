@@ -824,8 +824,10 @@ class TimeMachineProGUI:
         # Methodology & Timeframe Tag Badge
         proj_mode = meta.get("projection_mode", "free_drift")
         tb_mode = meta.get("tie_break", "smart")
-        pm_tag = "Two-Stream" if proj_mode == "free_drift" else ("Frozen (Asli)" if proj_mode == "frozen" else "Survival")
-        tb_tag = "Smart" if tb_mode == "smart" else ("SL First (Asli)" if tb_mode == "conservative" else "50:50")
+        pm_tag = ("Block Bootstrap V2" if proj_mode == "block_bootstrap" else
+                  ("Two-Stream" if proj_mode == "free_drift" else ("Frozen (Asli)" if proj_mode == "frozen" else "Survival")))
+        tb_tag = ("Ambiguous=SL" if tb_mode == "conservative_ambiguous" else
+                  ("Smart" if tb_mode == "smart" else ("SL First (Asli)" if tb_mode == "conservative" else "50:50")))
 
         canvas.create_text(
             pad_left + 8, pad_top + 10,
