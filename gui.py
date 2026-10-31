@@ -735,13 +735,15 @@ class TimeMachineProGUI:
 
         b_sign = "+" if bo["avg_r"] > 0 else ""
         s_sign = "+" if so["avg_r"] > 0 else ""
+        bp = res["buy"]["plan"]
+        sp = res["sell"]["plan"]
         self.buy_odds_lbl.configure(
-            text=f"TP: {bo['target_first_pct']:.1f}% | RR: 1:{res['buy']['plan']['target_r']:.2f} | Exp: {b_sign}{bo['avg_r']:.2f}R",
-            fg=GREEN if bo["avg_r"] > 0 else TEXT_MUTED
+            text=f"TP: {bo['target_first_pct']:.1f}% | Touch: {bp['entry_touch_probability_pct']:.0f}% | RR: 1:{bp['target_r']:.2f} | Adj.Exp: {bp['fill_adjusted_simulated_avg_r']:+.2f}R",
+            fg=GREEN if bp["fill_adjusted_simulated_avg_r"] > 0 else TEXT_MUTED
         )
         self.sell_odds_lbl.configure(
-            text=f"TP: {so['target_first_pct']:.1f}% | RR: 1:{res['sell']['plan']['target_r']:.2f} | Exp: {s_sign}{so['avg_r']:.2f}R",
-            fg=RED if so["avg_r"] > 0 else TEXT_MUTED
+            text=f"TP: {so['target_first_pct']:.1f}% | Touch: {sp['entry_touch_probability_pct']:.0f}% | RR: 1:{sp['target_r']:.2f} | Adj.Exp: {sp['fill_adjusted_simulated_avg_r']:+.2f}R",
+            fg=RED if sp["fill_adjusted_simulated_avg_r"] > 0 else TEXT_MUTED
         )
 
         # Render Both Canvases
