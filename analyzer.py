@@ -176,52 +176,73 @@ def _calculate_volume_profile(bars, lookback=60, num_bins=30):
     return {"poc": poc_price, "vah": vah, "val": val}
 
 
-def _candidate_entries_poc(side, metrics, bars):
+def _candidate_entries_poc(side, metrics, bars, candidate_count=0):
     """Build candidate limits based on Volume Profile POC and Value Area retests."""
     cur, atr = metrics["current_price"], metrics["atr"]
     price_step = float(metrics.get("price_step", 0.01) or 0.01)
     if not bars or len(bars) < 20:
-        return _candidate_entries_atr_swing(side, metrics)
+        return _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count)
     vp = _calculate_volume_profile(bars, lookback=60, num_bins=30)
     poc, vah, val = vp["poc"], vp["vah"], vp["val"]
 
     candidates = []
-    if side == "buy":
-        if poc < cur - 0.05 * atr:
-            stop = min(val, poc - 0.5 * atr) - 0.15 * atr
-            target = max(vah, poc + (poc - stop) * 2.0)
-            candidates.append(CandidateEntry(_round_to_step(poc, price_step), stop=stop, target=target, tag="POC Volume Cluster"))
-        if val < cur - 0.05 * atr and abs(val - poc) > 0.1 * atr:
-            stop = val - 0.35 * atr
-            target = max(poc, val + (val - stop) * 2.0)
-            candidates.append(CandidateEntry(_round_to_step(val, price_step), stop=stop, target=target, tag="VAL Support Retest"))
-        if vah < cur - 0.05 * atr:
-            stop = poc - 0.15 * atr
-            target = vah + (vah - stop) * 1.8
-            candidates.append(CandidateEntry(_round_to_step(vah, price_step), stop=stop, target=target, tag="VAH Breakout Retest"))
-        va_mid = 0.5 * (poc + val)
-        if va_mid < cur - 0.05 * atr:
-            stop = val - 0.20 * atr
-            target = vah
-            candidates.append(CandidateEntry(_round_to_step(va_mid, price_step), stop=stop, target=target, tag="Value Area Equilibrium"))
+    if candidate_count > 0:
+        if side == "buy":
+            # Spread limit orders evenly across the value area from VAL to VAH
+            start_price = min(vah, cur - 0.05 * atr)
+            end_price = val
+            if start_price > end_price:
+                prices = np.linspace(start_price, end_price, min(candidate_count, 100))
+                for idx, p in enumerate(prices):
+                    stop = val - 0.5 * atr
+                    target = vah + atr
+                    candidates.append(CandidateEntry(_round_to_step(p, price_step), stop=stop, target=target, tag=f"POC Grid {idx+1}"))
+        else:
+            start_price = max(val, cur + 0.05 * atr)
+            end_price = vah
+            if start_price < end_price:
+                prices = np.linspace(start_price, end_price, min(candidate_count, 100))
+                for idx, p in enumerate(prices):
+                    stop = vah + 0.5 * atr
+                    target = val - atr
+                    candidates.append(CandidateEntry(_round_to_step(p, price_step), stop=stop, target=target, tag=f"POC Grid {idx+1}"))
     else:
-        if poc > cur + 0.05 * atr:
-            stop = max(vah, poc + 0.5 * atr) + 0.15 * atr
-            target = min(val, poc - (stop - poc) * 2.0)
-            candidates.append(CandidateEntry(_round_to_step(poc, price_step), stop=stop, target=target, tag="POC Volume Cluster"))
-        if vah > cur + 0.05 * atr and abs(vah - poc) > 0.1 * atr:
-            stop = vah + 0.35 * atr
-            target = min(poc, vah - (stop - vah) * 2.0)
-            candidates.append(CandidateEntry(_round_to_step(vah, price_step), stop=stop, target=target, tag="VAH Resistance Retest"))
-        if val > cur + 0.05 * atr:
-            stop = poc + 0.15 * atr
-            target = val - (stop - val) * 1.8
-            candidates.append(CandidateEntry(_round_to_step(val, price_step), stop=stop, target=target, tag="VAL Breakdown Retest"))
-        va_mid = 0.5 * (poc + vah)
-        if va_mid > cur + 0.05 * atr:
-            stop = vah + 0.20 * atr
-            target = val
-            candidates.append(CandidateEntry(_round_to_step(va_mid, price_step), stop=stop, target=target, tag="Value Area Equilibrium"))
+        if side == "buy":
+            if poc < cur - 0.05 * atr:
+                stop = min(val, poc - 0.5 * atr) - 0.15 * atr
+                target = max(vah, poc + (poc - stop) * 2.0)
+                candidates.append(CandidateEntry(_round_to_step(poc, price_step), stop=stop, target=target, tag="POC Volume Cluster"))
+            if val < cur - 0.05 * atr and abs(val - poc) > 0.1 * atr:
+                stop = val - 0.35 * atr
+                target = max(poc, val + (val - stop) * 2.0)
+                candidates.append(CandidateEntry(_round_to_step(val, price_step), stop=stop, target=target, tag="VAL Support Retest"))
+            if vah < cur - 0.05 * atr:
+                stop = poc - 0.15 * atr
+                target = vah + (vah - stop) * 1.8
+                candidates.append(CandidateEntry(_round_to_step(vah, price_step), stop=stop, target=target, tag="VAH Breakout Retest"))
+            va_mid = 0.5 * (poc + val)
+            if va_mid < cur - 0.05 * atr:
+                stop = val - 0.20 * atr
+                target = vah
+                candidates.append(CandidateEntry(_round_to_step(va_mid, price_step), stop=stop, target=target, tag="Value Area Equilibrium"))
+        else:
+            if poc > cur + 0.05 * atr:
+                stop = max(vah, poc + 0.5 * atr) + 0.15 * atr
+                target = min(val, poc - (stop - poc) * 2.0)
+                candidates.append(CandidateEntry(_round_to_step(poc, price_step), stop=stop, target=target, tag="POC Volume Cluster"))
+            if vah > cur + 0.05 * atr and abs(vah - poc) > 0.1 * atr:
+                stop = vah + 0.35 * atr
+                target = min(poc, vah - (stop - vah) * 2.0)
+                candidates.append(CandidateEntry(_round_to_step(vah, price_step), stop=stop, target=target, tag="VAH Resistance Retest"))
+            if val > cur + 0.05 * atr:
+                stop = poc + 0.15 * atr
+                target = val - (stop - val) * 1.8
+                candidates.append(CandidateEntry(_round_to_step(val, price_step), stop=stop, target=target, tag="VAL Breakdown Retest"))
+            va_mid = 0.5 * (poc + vah)
+            if va_mid > cur + 0.05 * atr:
+                stop = vah + 0.20 * atr
+                target = val
+                candidates.append(CandidateEntry(_round_to_step(va_mid, price_step), stop=stop, target=target, tag="Value Area Equilibrium"))
 
     seen = set()
     deduped = []
@@ -230,7 +251,7 @@ def _candidate_entries_poc(side, metrics, bars):
         if float(c) not in seen and (c < cur if side == "buy" else c > cur):
             seen.add(float(c))
             deduped.append(c)
-    return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics)
+    return deduped if candidate_count > 0 else (deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count))
 
 
 def _candidate_entries_fvg(side, metrics, bars):
