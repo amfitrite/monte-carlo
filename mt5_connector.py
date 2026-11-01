@@ -112,8 +112,9 @@ def get_mt5_gold_bars(symbol=None, timeframe="M5", count=None, force_refresh=Fal
         h = float(r["high"])
         l = float(r["low"])
         c = float(r["close"])
+        vol = float(r["tick_volume"]) if "tick_volume" in r.dtype.names else 1.0
         if c > 0 and o > 0 and h > 0 and l > 0:
-            bars.append({"timestamp": t, "open": o, "high": h, "low": l, "close": c})
+            bars.append({"timestamp": t, "open": o, "high": h, "low": l, "close": c, "volume": vol, "tick_volume": vol})
             
     # Get live tick and spread directly from MT5 broker
     tick = mt5.symbol_info_tick(resolved_sym)

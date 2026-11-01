@@ -210,6 +210,53 @@ class DualAutoSearchTests(unittest.TestCase):
                 rr_ratio=2.0, rr_sl_points=0
             )
 
+    def test_all_five_strategies_generate_valid_dual_plans(self):
+        bars = make_bars()
+        strategies = ["atr_swing", "poc", "fvg", "orb", "zscore"]
+        expected_labels = {
+            "atr_swing": "ATR Pullback & Swing Structure",
+            "poc": "Breakout + Retest Point of Control (POC)",
+            "fvg": "Liquidity Sweep + Fair Value Gap (FVG)",
+            "orb": "Session Open Range Breakout (ORB)",
+            "zscore": "Bollinger Bands Extremes (Z-Score)"
+        }
+        for strat in strategies:
+            res = analyzer.find_dual_recommendations(
+                bars, horizon_bars=4, replays=100, engine_mode="legacy",
+                strategy=strat
+            )
+            self.assertEqual(res["strategy"], strat)
+            self.assertEqual(res["strategy_label"], expected_labels[strat])
+            for side in ("buy", "sell"):
+                plan = res[side]["plan"]
+                self.assertEqual(plan["order_type"], "LIMIT")
+                self.assertGreater(plan["entry"], 0.0)
+                self.assertGreater(plan["stop"], 0.0)
+                self.assertGreater(plan["target"], 0.0)
+                if side == "buy":
+                    self.assertLess(plan["entry"], res["metrics"]["current_price"])
+                    self.assertLess(plan["stop"], plan["entry"])
+                    self.assertGreater(plan["target"], plan["entry"])
+                else:
+                    self.assertGreater(plan["entry"], res["metrics"]["current_price"])
+                    self.assertGreater(plan["stop"], plan["entry"])
+                    self.assertLess(plan["target"], plan["entry"])
+
+    def test_strategy_combines_with_risk_reward_mode(self):
+        bars = make_bars()
+        res = analyzer.find_dual_recommendations(
+            bars, horizon_bars=4, replays=100, engine_mode="legacy",
+            strategy="poc", tpsl_mode="risk_reward", point_size=0.01,
+            rr_ratio=4.0, rr_sl_points=800
+        )
+        self.assertEqual(res["strategy"], "poc")
+        self.assertEqual(res["tpsl_config"]["mode"], "risk_reward")
+        self.assertEqual(res["tpsl_config"]["rr_ratio"], 4.0)
+        self.assertEqual(res["buy"]["plan"]["tp_points"], 3200)
+        self.assertEqual(res["buy"]["plan"]["sl_points"], 800)
+        self.assertEqual(res["sell"]["plan"]["tp_points"], 3200)
+        self.assertEqual(res["sell"]["plan"]["sl_points"], 800)
+
 
 if __name__ == "__main__":
     unittest.main()

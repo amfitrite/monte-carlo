@@ -507,17 +507,32 @@ class TimeMachineProGUI:
         # Section 3A: AUTO MODE SPECIFIC CONTROLS
         self.auto_sidebar_frame = tk.Frame(parent, bg=PANEL_BG)
         
-        info_card = tk.Frame(self.auto_sidebar_frame, bg=CARD_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
-        info_card.pack(fill=tk.X, pady=(0, 12))
+        # Strategy Selector Card
+        strat_card = tk.Frame(self.auto_sidebar_frame, bg=CARD_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
+        strat_card.pack(fill=tk.X, pady=(0, 10))
 
-        tk.Label(
-            info_card, text="💡 DUAL QUANT SCANNER", font=("Segoe UI", 9, "bold"),
-            fg=CYAN, bg=CARD_BG
-        ).pack(anchor="w")
-        tk.Label(
-            info_card, text="Memindai titik pantulan (Buy Limit di Support & Sell Limit di Resistance) lalu menyimulasikan 2 skenario sekaligus.",
-            font=("Segoe UI", 8), fg=TEXT_MUTED, bg=CARD_BG, wraplength=280, justify=tk.LEFT
-        ).pack(anchor="w", pady=(3, 0))
+        tk.Label(strat_card, text="🧠 ENTRY STRATEGY", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=CARD_BG).pack(anchor="w")
+        self.strategy_var = tk.StringVar(value="ATR Pullback & Swing (Default)")
+        self.strategy_combo = ttk.Combobox(
+            strat_card, textvariable=self.strategy_var,
+            values=[
+                "ATR Pullback & Swing (Default)",
+                "Breakout + POC Retest",
+                "Liquidity Sweep + FVG",
+                "Session ORB (Asia/London/NY)",
+                "Bollinger Extremes (Z-Score)"
+            ],
+            state="readonly", font=("Segoe UI", 8)
+        )
+        self.strategy_combo.pack(fill=tk.X, pady=(4, 4))
+        self.strategy_combo.bind("<<ComboboxSelected>>", lambda e: self._on_strategy_change())
+        
+        self.strategy_desc_label = tk.Label(
+            strat_card,
+            text="Pencarian level limit dari pullback ATR bertingkat dan swing structure 24 bar.",
+            font=("Segoe UI", 7), fg=TEXT_MUTED, bg=CARD_BG, wraplength=280, justify=tk.LEFT
+        )
+        self.strategy_desc_label.pack(anchor="w")
 
         # Dual Auto TP/SL search configuration (hidden in Manual mode).
         tpsl_card = tk.Frame(self.auto_sidebar_frame, bg=CARD_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
@@ -868,6 +883,20 @@ class TimeMachineProGUI:
         if hasattr(self, "bind_sidebar_mousewheel"):
             self.bind_sidebar_mousewheel(self.tpsl_fields_frame)
 
+    def _on_strategy_change(self):
+        desc_map = {
+            "ATR Pullback & Swing (Default)": "Pencarian level limit dari pullback ATR bertingkat dan swing structure 24 bar.",
+            "Breakout + POC Retest": "Mendeteksi Point of Control (POC) dan Value Area dari Volume Profile untuk entri retest.",
+            "Liquidity Sweep + FVG": "Mendeteksi pembersihan likuiditas (sweep) dan Fair Value Gap (FVG) imbalance.",
+            "Session ORB (Asia/London/NY)": "Mengidentifikasi batas Open Range Breakout (ORB) dan entri retest batas pembukaan sesi.",
+            "Bollinger Extremes (Z-Score)": "Menempatkan limit order di deviasi ekstrem Bollinger Bands (mean reversion +/-2.0 sigma)."
+        }
+        text = desc_map.get(self.strategy_var.get(), "")
+        if hasattr(self, "strategy_desc_label"):
+            self.strategy_desc_label.configure(text=text)
+        if self.active_mode == "auto":
+            self.execute_auto_scan()
+
     def _on_tpsl_mode_change(self):
         self._render_tpsl_fields()
         if self.active_mode == "auto":
@@ -1045,6 +1074,13 @@ class TimeMachineProGUI:
         tb_mode = self.current_tie_break
         season_mode = self.current_seasonality
         engine_mode = {"Legacy V1 (Default)": "legacy", "Enhanced OHLC V2": "v2", "Compare V1 vs V2": "compare"}.get(self.engine_mode_var.get(), "legacy")
+        strategy_code = {
+            "ATR Pullback & Swing (Default)": "atr_swing",
+            "Breakout + POC Retest": "poc",
+            "Liquidity Sweep + FVG": "fvg",
+            "Session ORB (Asia/London/NY)": "orb",
+            "Bollinger Extremes (Z-Score)": "zscore"
+        }.get(self.strategy_var.get(), "atr_swing")
         try:
             tpsl_params = self._get_tpsl_scan_params()
         except (TypeError, ValueError) as exc:
@@ -1065,6 +1101,7 @@ class TimeMachineProGUI:
                     tie_break=tb_mode,
                     seasonality=season_mode,
                     engine_mode=engine_mode,
+                    strategy=strategy_code,
                     **tpsl_params
                 )
                 self.root.after(0, lambda r=res: self._apply_dual_results(r))
@@ -1088,8 +1125,9 @@ class TimeMachineProGUI:
 
         # Update Summary Banner
         col = GREEN if best_dir == "BUY" else (RED if best_dir == "SELL" else GOLD)
+        strat_lbl = res.get("strategy_label", "ATR & Swing")
         self.dual_summary_title.configure(text=f"⭐ BEST QUANT EDGE: {best_dir} SETUP", fg=col)
-        self.dual_summary_desc.configure(text=summary)
+        self.dual_summary_desc.configure(text=f"[{strat_lbl}] {summary}")
 
         # Update Headers
         bo = res["buy"]["odds"]
@@ -1393,6 +1431,7 @@ class TimeMachineProGUI:
             "seasonality": self.seasonality_var.get(),
             "engine_mode": self.engine_mode_var.get(),
             "grid_lines": self.grid_lines_var.get(),
+            "strategy": self.strategy_var.get(),
             "tpsl_mode": self.tpsl_mode_var.get(),
             "point_size": self.point_size_var.get(),
             "point_size_custom": self._point_size_custom,
@@ -1456,6 +1495,12 @@ class TimeMachineProGUI:
             saved_grid_lines = settings.get("grid_lines", "25 Lines (Default)")
             if saved_grid_lines in self.grid_lines_combo["values"]:
                 self.grid_lines_var.set(saved_grid_lines)
+
+            # Restore Strategy selection
+            saved_strat = settings.get("strategy", "ATR Pullback & Swing (Default)")
+            if saved_strat in self.strategy_combo["values"]:
+                self.strategy_var.set(saved_strat)
+                self._on_strategy_change()
 
             # Restore TP/SL search mode and broker point conversion.
             saved_tpsl_mode = settings.get("tpsl_mode", "Auto Optimize")

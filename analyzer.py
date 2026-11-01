@@ -23,8 +23,9 @@ def _valid_bars(bars):
         try:
             ts = float(bar["timestamp"])
             o, h, l, c = (float(bar[k]) for k in ("open", "high", "low", "close"))
+            vol = float(bar.get("volume", bar.get("tick_volume", 1.0)) or 1.0)
             if ts > 0 and min(o, h, l, c) > 0 and l <= min(o, c) <= max(o, c) <= h:
-                clean.append({"timestamp": ts, "open": o, "high": h, "low": l, "close": c})
+                clean.append({"timestamp": ts, "open": o, "high": h, "low": l, "close": c, "volume": vol})
         except (KeyError, TypeError, ValueError):
             continue
     clean.sort(key=lambda x: x["timestamp"])
@@ -57,8 +58,8 @@ def calculate_market_metrics(bars, period=48):
     }
 
 
-def _candidate_entries(side, metrics):
-    """Build a compact set of limit prices around ATR pullbacks and swing structure."""
+def _candidate_entries_atr_swing(side, metrics):
+    """Build a compact set of limit prices around ATR pullbacks and swing structure (Baseline / Default)."""
     cur, atr = metrics["current_price"], metrics["atr"]
     lo, hi = metrics["swing_low"], metrics["swing_high"]
     span = max(hi - lo, atr)
@@ -78,6 +79,229 @@ def _candidate_entries(side, metrics):
         fallback = cur - 0.5 * atr if side == "buy" else cur + 0.5 * atr
         valid = [_round_to_step(fallback, price_step)]
     return valid[:5]
+
+
+def _calculate_volume_profile(bars, lookback=60, num_bins=30):
+    """Calculate Point of Control (POC) and Value Area from recent bars using tick volume."""
+    recent = bars[-min(len(bars), max(20, lookback)):]
+    highs = np.asarray([b["high"] for b in recent], dtype=float)
+    lows = np.asarray([b["low"] for b in recent], dtype=float)
+    closes = np.asarray([b["close"] for b in recent], dtype=float)
+    vols = np.asarray([float(b.get("volume", b.get("tick_volume", 1.0)) or 1.0) for b in recent], dtype=float)
+    
+    price_min = float(np.min(lows))
+    price_max = float(np.max(highs))
+    if price_max <= price_min:
+        return {"poc": float(closes[-1]), "vah": price_max, "val": price_min}
+    
+    bin_edges = np.linspace(price_min, price_max, num_bins + 1)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    bin_volumes = np.zeros(num_bins, dtype=float)
+    
+    for b_high, b_low, vol in zip(highs, lows, vols):
+        mask = (bin_edges[1:] >= b_low) & (bin_edges[:-1] <= b_high)
+        overlap = np.count_nonzero(mask)
+        if overlap > 0:
+            bin_volumes[mask] += vol / float(overlap)
+        else:
+            idx = int(np.clip(np.searchsorted(bin_edges, 0.5 * (b_high + b_low)), 0, num_bins - 1))
+            bin_volumes[idx] += vol
+
+    poc_idx = int(np.argmax(bin_volumes))
+    poc_price = float(bin_centers[poc_idx])
+    
+    total_vol = float(np.sum(bin_volumes))
+    target_vol = 0.70 * total_vol
+    acc_vol = float(bin_volumes[poc_idx])
+    left, right = poc_idx, poc_idx
+    while acc_vol < target_vol and (left > 0 or right < num_bins - 1):
+        v_left = bin_volumes[left - 1] if left > 0 else -1.0
+        v_right = bin_volumes[right + 1] if right < num_bins - 1 else -1.0
+        if v_left >= v_right and left > 0:
+            left -= 1
+            acc_vol += bin_volumes[left]
+        elif right < num_bins - 1:
+            right += 1
+            acc_vol += bin_volumes[right]
+        else:
+            break
+            
+    vah = float(bin_centers[right])
+    val = float(bin_centers[left])
+    return {"poc": poc_price, "vah": vah, "val": val}
+
+
+def _candidate_entries_poc(side, metrics, bars):
+    """Build candidate limits based on Volume Profile POC and Value Area retests."""
+    cur, atr = metrics["current_price"], metrics["atr"]
+    price_step = float(metrics.get("price_step", 0.01) or 0.01)
+    if not bars or len(bars) < 20:
+        return _candidate_entries_atr_swing(side, metrics)
+    vp = _calculate_volume_profile(bars, lookback=60, num_bins=30)
+    poc, vah, val = vp["poc"], vp["vah"], vp["val"]
+
+    raw = []
+    if side == "buy":
+        if poc < cur - 0.08 * atr:
+            raw.append(poc)
+        if val < cur - 0.08 * atr:
+            raw.append(val)
+        if vah < cur - 0.08 * atr:
+            raw.append(vah)
+        raw.extend([cur - 0.30 * atr, cur - 0.60 * atr, cur - 0.90 * atr])
+        valid = [x for x in raw if cur - 2.5 * atr <= x <= cur - 0.08 * atr]
+    else:
+        if poc > cur + 0.08 * atr:
+            raw.append(poc)
+        if vah > cur + 0.08 * atr:
+            raw.append(vah)
+        if val > cur + 0.08 * atr:
+            raw.append(val)
+        raw.extend([cur + 0.30 * atr, cur + 0.60 * atr, cur + 0.90 * atr])
+        valid = [x for x in raw if cur + 0.08 * atr <= x <= cur + 2.5 * atr]
+
+    valid = sorted(set(_round_to_step(float(x), price_step) for x in valid),
+                   key=lambda x: abs(x - cur))
+    if not valid:
+        return _candidate_entries_atr_swing(side, metrics)
+    return valid[:5]
+
+
+def _candidate_entries_fvg(side, metrics, bars):
+    """Build candidate limits based on Fair Value Gaps (FVG) and Liquidity Sweeps."""
+    cur, atr = metrics["current_price"], metrics["atr"]
+    price_step = float(metrics.get("price_step", 0.01) or 0.01)
+    if not bars or len(bars) < 20:
+        return _candidate_entries_atr_swing(side, metrics)
+    recent = bars[-min(len(bars), 50):]
+    raw = []
+
+    if side == "buy":
+        for i in range(2, len(recent)):
+            gap_bottom = float(recent[i - 2]["high"])
+            gap_top = float(recent[i]["low"])
+            if gap_top > gap_bottom + 0.05 * atr:
+                ce = 0.5 * (gap_bottom + gap_top)
+                if gap_top < cur:
+                    raw.extend([gap_top, ce, gap_bottom])
+        for i in range(5, len(recent) - 1):
+            prior_low = float(min(b["low"] for b in recent[max(0, i - 10):i]))
+            if float(recent[i]["low"]) < prior_low and float(recent[i]["close"]) > prior_low:
+                raw.append(float(recent[i]["low"]))
+                raw.append(prior_low)
+        raw.extend([cur - 0.35 * atr, cur - 0.70 * atr])
+        valid = [x for x in raw if cur - 2.5 * atr <= x <= cur - 0.08 * atr]
+    else:
+        for i in range(2, len(recent)):
+            gap_top = float(recent[i - 2]["low"])
+            gap_bottom = float(recent[i]["high"])
+            if gap_top > gap_bottom + 0.05 * atr:
+                ce = 0.5 * (gap_bottom + gap_top)
+                if gap_bottom > cur:
+                    raw.extend([gap_bottom, ce, gap_top])
+        for i in range(5, len(recent) - 1):
+            prior_high = float(max(b["high"] for b in recent[max(0, i - 10):i]))
+            if float(recent[i]["high"]) > prior_high and float(recent[i]["close"]) < prior_high:
+                raw.append(float(recent[i]["high"]))
+                raw.append(prior_high)
+        raw.extend([cur + 0.35 * atr, cur + 0.70 * atr])
+        valid = [x for x in raw if cur + 0.08 * atr <= x <= cur + 2.5 * atr]
+
+    valid = sorted(set(_round_to_step(float(x), price_step) for x in valid),
+                   key=lambda x: abs(x - cur))
+    if not valid:
+        return _candidate_entries_atr_swing(side, metrics)
+    return valid[:5]
+
+
+def _candidate_entries_orb(side, metrics, bars):
+    """Build candidate limits based on Opening Range Breakout (ORB) levels."""
+    cur, atr = metrics["current_price"], metrics["atr"]
+    price_step = float(metrics.get("price_step", 0.01) or 0.01)
+    if not bars or len(bars) < 20:
+        return _candidate_entries_atr_swing(side, metrics)
+    lookback = min(len(bars), 36)
+    session_bars = bars[-lookback:]
+    orb_window = session_bars[:min(12, len(session_bars))]
+    orb_high = float(max(b["high"] for b in orb_window))
+    orb_low = float(min(b["low"] for b in orb_window))
+    orb_mid = 0.5 * (orb_high + orb_low)
+    
+    raw = []
+    if side == "buy":
+        if orb_high < cur:
+            raw.append(orb_high)
+        if orb_mid < cur:
+            raw.append(orb_mid)
+        if orb_low < cur:
+            raw.append(orb_low)
+        raw.extend([cur - 0.25 * atr, cur - 0.50 * atr, cur - 0.85 * atr])
+        valid = [x for x in raw if cur - 2.5 * atr <= x <= cur - 0.08 * atr]
+    else:
+        if orb_low > cur:
+            raw.append(orb_low)
+        if orb_mid > cur:
+            raw.append(orb_mid)
+        if orb_high > cur:
+            raw.append(orb_high)
+        raw.extend([cur + 0.25 * atr, cur + 0.50 * atr, cur + 0.85 * atr])
+        valid = [x for x in raw if cur + 0.08 * atr <= x <= cur + 2.5 * atr]
+
+    valid = sorted(set(_round_to_step(float(x), price_step) for x in valid),
+                   key=lambda x: abs(x - cur))
+    if not valid:
+        return _candidate_entries_atr_swing(side, metrics)
+    return valid[:5]
+
+
+def _candidate_entries_zscore(side, metrics, bars):
+    """Build candidate limits based on Bollinger Bands Extreme Deviations & Z-Score."""
+    cur, atr = metrics["current_price"], metrics["atr"]
+    price_step = float(metrics.get("price_step", 0.01) or 0.01)
+    if not bars or len(bars) < 20:
+        return _candidate_entries_atr_swing(side, metrics)
+    recent = bars[-min(len(bars), 30):]
+    closes = np.asarray([b["close"] for b in recent], dtype=float)
+    mean = float(np.mean(closes))
+    std = float(np.std(closes))
+    std = max(std, 0.25 * atr)
+    
+    raw = []
+    if side == "buy":
+        raw.append(mean - 1.5 * std)
+        raw.append(mean - 2.0 * std)
+        raw.append(mean - 2.5 * std)
+        raw.append(cur - 0.30 * atr)
+        raw.append(cur - 0.70 * atr)
+        valid = [x for x in raw if cur - 2.5 * atr <= x <= cur - 0.08 * atr]
+    else:
+        raw.append(mean + 1.5 * std)
+        raw.append(mean + 2.0 * std)
+        raw.append(mean + 2.5 * std)
+        raw.append(cur + 0.30 * atr)
+        raw.append(cur + 0.70 * atr)
+        valid = [x for x in raw if cur + 0.08 * atr <= x <= cur + 2.5 * atr]
+
+    valid = sorted(set(_round_to_step(float(x), price_step) for x in valid),
+                   key=lambda x: abs(x - cur))
+    if not valid:
+        return _candidate_entries_atr_swing(side, metrics)
+    return valid[:5]
+
+
+def _candidate_entries(side, metrics, bars=None, strategy="atr_swing"):
+    """Dispatcher to build candidate limits based on selected strategy."""
+    strat = str(strategy or "atr_swing").strip().lower()
+    if strat in ("poc", "breakout + poc retest", "poc_retest"):
+        return _candidate_entries_poc(side, metrics, bars or [])
+    elif strat in ("fvg", "liquidity sweep + fvg", "sweep_fvg"):
+        return _candidate_entries_fvg(side, metrics, bars or [])
+    elif strat in ("orb", "session orb", "session orb (asia/london/ny)"):
+        return _candidate_entries_orb(side, metrics, bars or [])
+    elif strat in ("zscore", "bollinger extremes (z-score)", "bollinger", "mean_reversion"):
+        return _candidate_entries_zscore(side, metrics, bars or [])
+    else:
+        return _candidate_entries_atr_swing(side, metrics)
 
 
 
@@ -349,9 +573,9 @@ def _rank_score(result, touch_stats):
 
 def _scan_side(side, metrics, bars_data, horizon_bars, search_replays, spread,
                seed, projection_mode, tie_break, seasonality, engine_mode,
-               tpsl_config):
+               tpsl_config, strategy="atr_swing"):
     interval = int(bars_data.get("interval_minutes", 5) or 5)
-    entries = _candidate_entries(side, metrics)
+    entries = _candidate_entries(side, metrics, bars=bars_data.get("bars", []), strategy=strategy)
     plans = _build_candidate_plans(side, entries, metrics, interval, tpsl_config)
     candidates = []
     for index, plan in enumerate(plans):
@@ -436,7 +660,8 @@ def find_dual_recommendations(
     fixed_tp_points=2000, fixed_sl_points=1000,
     tp_min_points=1000, tp_max_points=5000, tp_step_points=500,
     sl_min_points=500, sl_max_points=2000, sl_step_points=250,
-    rr_ratio=2.0, rr_sl_points=1000
+    rr_ratio=2.0, rr_sl_points=1000,
+    strategy="atr_swing"
 ):
     """
     Search and rank BUY LIMIT and SELL LIMIT candidates.
@@ -445,6 +670,7 @@ def find_dual_recommendations(
     range searches a bounded grid of TP/SL point distances; risk_reward locks a
     specific target R:R ratio (e.g. 1:2, 1:10) and searches for optimal limit entries.
     point_size is the price value of one broker point and may differ by broker/symbol.
+    strategy selects the entry model: 'atr_swing' (default), 'poc', 'fvg', 'orb', or 'zscore'.
     """
     if engine_mode not in ("legacy", "v2", "compare"):
         raise ValueError("engine_mode must be 'legacy', 'v2', or 'compare'.")
@@ -470,6 +696,36 @@ def find_dual_recommendations(
     metrics["interval_minutes"] = interval
     metrics["price_step"] = float(tpsl_config.get("point_size", point_size or 0.01))
 
+    strat_key = str(strategy or "atr_swing").strip().lower()
+    strategy_map = {
+        "atr_swing": "atr_swing",
+        "atr pullback & swing (default)": "atr_swing",
+        "atr pullback & swing": "atr_swing",
+        "atr": "atr_swing",
+        "poc": "poc",
+        "breakout + poc retest": "poc",
+        "poc_retest": "poc",
+        "fvg": "fvg",
+        "liquidity sweep + fvg": "fvg",
+        "sweep_fvg": "fvg",
+        "orb": "orb",
+        "session orb": "orb",
+        "session orb (asia/london/ny)": "orb",
+        "zscore": "zscore",
+        "bollinger extremes (z-score)": "zscore",
+        "bollinger": "zscore",
+        "mean_reversion": "zscore"
+    }
+    normalized_strategy = strategy_map.get(strat_key, "atr_swing")
+    strategy_labels = {
+        "atr_swing": "ATR Pullback & Swing Structure",
+        "poc": "Breakout + Retest Point of Control (POC)",
+        "fvg": "Liquidity Sweep + Fair Value Gap (FVG)",
+        "orb": "Session Open Range Breakout (ORB)",
+        "zscore": "Bollinger Bands Extremes (Z-Score)"
+    }
+    strategy_label = strategy_labels.get(normalized_strategy, "ATR Pullback & Swing Structure")
+
     horizon_bars = max(1, int(horizon_bars))
     replays = max(100, int(replays))
     search_replays = min(replays, 600)
@@ -477,11 +733,13 @@ def find_dual_recommendations(
 
     buy_selected, buy_count = _scan_side(
         "buy", metrics, normalized, horizon_bars, search_replays, spread, seed,
-        projection_mode, tie_break, seasonality, primary_mode, tpsl_config
+        projection_mode, tie_break, seasonality, primary_mode, tpsl_config,
+        strategy=normalized_strategy
     )
     sell_selected, sell_count = _scan_side(
         "sell", metrics, normalized, horizon_bars, search_replays, spread, seed + 1000,
-        projection_mode, tie_break, seasonality, primary_mode, tpsl_config
+        projection_mode, tie_break, seasonality, primary_mode, tpsl_config,
+        strategy=normalized_strategy
     )
     buy_res = _finalize_recommendation(
         "buy", buy_selected, buy_count, normalized, metrics, horizon_bars,
@@ -541,9 +799,12 @@ def find_dual_recommendations(
         "best_direction": best_dir,
         "summary": summary,
         "engine_mode": engine_mode,
+        "strategy": normalized_strategy,
+        "strategy_label": strategy_label,
         "tpsl_config": tpsl_report,
         "search": {
-            "method": "ATR pullback + recent swing-structure candidate grid",
+            "strategy": strategy_label,
+            "method": f"{strategy_label} candidate grid",
             "buy_candidates_scanned": buy_count,
             "sell_candidates_scanned": sell_count,
             "search_replays_per_candidate": search_replays,
