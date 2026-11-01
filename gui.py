@@ -115,6 +115,22 @@ class TimeMachineProGUI:
         self.mt5_positions = []
         self._auto_scan_debounce_timer = None
 
+        # Chart Interactive Zoom & Pan states
+        self.zoom_y = 1.0
+        self.zoom_x = 1.0
+        self.pan_y = 0.0
+        self.pan_x = 0.0
+        self._pan_start_x = 0
+        self._pan_start_y = 0
+        self._is_panning = False
+        self._cached_base_range = 80.0
+        self._cached_orig_mid = 3875.0
+        self._cached_total_steps = 72
+        self._cached_plot_w = 400
+        self._cached_plot_h = 300
+        self._cached_vis_price_range = 80.0
+        self._cached_vis_steps = 72
+
         # Configure taskbar integration for frameless window
         self._setup_taskbar()
 
@@ -125,6 +141,15 @@ class TimeMachineProGUI:
 
         # Load saved settings if any
         self._load_settings()
+
+        # Root window hotkeys for chart zoom
+        self.root.bind("<Control-Key-0>", lambda e: self._reset_chart_zoom())
+        self.root.bind("<Control-KP_0>", lambda e: self._reset_chart_zoom())
+        self.root.bind("<Control-plus>", lambda e: self._zoom_step(1.2))
+        self.root.bind("<Control-equal>", lambda e: self._zoom_step(1.2))
+        self.root.bind("<Control-minus>", lambda e: self._zoom_step(1.0 / 1.2))
+        self.root.bind("<Control-KP_Add>", lambda e: self._zoom_step(1.2))
+        self.root.bind("<Control-KP_Subtract>", lambda e: self._zoom_step(1.0 / 1.2))
 
         # Bind close protocol on root window as well
         self.root.protocol("WM_DELETE_WINDOW", self._close_window)
@@ -496,10 +521,10 @@ class TimeMachineProGUI:
         self.seasonality_combo.bind("<<ComboboxSelected>>", lambda e: self._on_methodology_change())
 
         tk.Label(self.method_body, text="Price Grid Lines", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w", pady=(4, 1))
-        self.grid_lines_var = tk.StringVar(value="25 Lines (Default)")
+        self.grid_lines_var = tk.StringVar(value="Dynamic Adaptive (Default)")
         self.grid_lines_combo = ttk.Combobox(
             self.method_body, textvariable=self.grid_lines_var,
-            values=["25 Lines (Default)", "50 Lines"], state="readonly", font=("Segoe UI", 8), cursor="hand2"
+            values=["Dynamic Adaptive (Default)", "25 Lines", "50 Lines"], state="readonly", font=("Segoe UI", 8), cursor="hand2"
         )
         self.grid_lines_combo.pack(fill=tk.X)
         self.grid_lines_combo.bind("<<ComboboxSelected>>", lambda e: self._on_display_setting_change())
@@ -664,10 +689,17 @@ class TimeMachineProGUI:
         tk.Label(buy_header, text="🟢 BUY LIMIT PROBABILITY CONE", font=("Segoe UI", 10, "bold"), fg=GREEN, bg=PANEL_BG).pack(side=tk.LEFT)
         self.buy_odds_lbl = tk.Label(buy_header, text="Target: --% | Expected: -- R", font=("Segoe UI", 9, "bold"), fg=TEXT_PRIMARY, bg=PANEL_BG)
         self.buy_odds_lbl.pack(side=tk.RIGHT)
+        btn_reset_buy = tk.Button(
+            buy_header, text="⟲ Reset Zoom", font=("Segoe UI", 8),
+            bg=INPUT_BG, fg=TEXT_MUTED, activebackground=PANEL_BG, activeforeground=GOLD,
+            relief="flat", padx=6, pady=1, cursor="hand2", command=self._reset_chart_zoom
+        )
+        btn_reset_buy.pack(side=tk.RIGHT, padx=(0, 8))
 
         self.buy_canvas = tk.Canvas(self.buy_chart_frame, bg="#0f141d", highlightthickness=0)
         self.buy_canvas.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
         self.buy_canvas.bind("<Configure>", lambda e: self._draw_dual_charts())
+        self._bind_chart_canvas_events(self.buy_canvas)
 
         # RIGHT: SELL FAN CHART
         self.sell_chart_frame = tk.Frame(charts_split, bg=PANEL_BG, highlightbackground=RED, highlightthickness=1)
@@ -678,10 +710,17 @@ class TimeMachineProGUI:
         tk.Label(sell_header, text="🔴 SELL LIMIT PROBABILITY CONE", font=("Segoe UI", 10, "bold"), fg=RED, bg=PANEL_BG).pack(side=tk.LEFT)
         self.sell_odds_lbl = tk.Label(sell_header, text="Target: --% | Expected: -- R", font=("Segoe UI", 9, "bold"), fg=TEXT_PRIMARY, bg=PANEL_BG)
         self.sell_odds_lbl.pack(side=tk.RIGHT)
+        btn_reset_sell = tk.Button(
+            sell_header, text="⟲ Reset Zoom", font=("Segoe UI", 8),
+            bg=INPUT_BG, fg=TEXT_MUTED, activebackground=PANEL_BG, activeforeground=GOLD,
+            relief="flat", padx=6, pady=1, cursor="hand2", command=self._reset_chart_zoom
+        )
+        btn_reset_sell.pack(side=tk.RIGHT, padx=(0, 8))
 
         self.sell_canvas = tk.Canvas(self.sell_chart_frame, bg="#0f141d", highlightthickness=0)
         self.sell_canvas.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
         self.sell_canvas.bind("<Configure>", lambda e: self._draw_dual_charts())
+        self._bind_chart_canvas_events(self.sell_canvas)
 
     # ========================== MANUAL SINGLE FAN CHART VIEW ==========================
     def _build_manual_view(self):
@@ -706,9 +745,20 @@ class TimeMachineProGUI:
         m_chart_box = tk.Frame(self.manual_view_frame, bg=PANEL_BG, highlightbackground=BORDER_COL, highlightthickness=1)
         m_chart_box.pack(fill=tk.BOTH, expand=True)
 
+        m_chart_header = tk.Frame(m_chart_box, bg=PANEL_BG, padx=10, pady=6)
+        m_chart_header.pack(fill=tk.X)
+        tk.Label(m_chart_header, text="📊 PROBABILITY PATH SIMULATION", font=("Segoe UI", 10, "bold"), fg=GOLD, bg=PANEL_BG).pack(side=tk.LEFT)
+        btn_reset_manual = tk.Button(
+            m_chart_header, text="⟲ Reset Zoom", font=("Segoe UI", 8),
+            bg=INPUT_BG, fg=TEXT_MUTED, activebackground=PANEL_BG, activeforeground=GOLD,
+            relief="flat", padx=6, pady=1, cursor="hand2", command=self._reset_chart_zoom
+        )
+        btn_reset_manual.pack(side=tk.RIGHT)
+
         self.manual_canvas = tk.Canvas(m_chart_box, bg="#0f141d", highlightthickness=0)
-        self.manual_canvas.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        self.manual_canvas.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
         self.manual_canvas.bind("<Configure>", lambda e: self._draw_manual_chart())
+        self._bind_chart_canvas_events(self.manual_canvas)
 
     def _create_card(self, parent, title, val, col):
         f = tk.Frame(parent, bg=PANEL_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
@@ -1153,17 +1203,204 @@ class TimeMachineProGUI:
         # Render Both Canvases
         self._draw_dual_charts()
 
-    # ========================== DRAWING DUAL CHARTS ==========================
+    # ========================== DRAWING DUAL CHARTS & INTERACTIVE ZOOM ==========================
+    def _nice_grid_step(self, raw_step):
+        """Calculate clean round 'nice numbers' (1, 2, 5, 10, 20, 50, etc.) for dynamic grid lines."""
+        if raw_step <= 0:
+            return 1.0
+        exponent = math.floor(math.log10(raw_step))
+        fraction = raw_step / (10 ** exponent)
+        if fraction <= 1.5:
+            nice_fraction = 1.0
+        elif fraction <= 3.0:
+            nice_fraction = 2.0
+        elif fraction <= 7.0:
+            nice_fraction = 5.0
+        else:
+            nice_fraction = 10.0
+        return nice_fraction * (10 ** exponent)
+
+    def _bind_chart_canvas_events(self, canvas):
+        """Bind mouse wheel, drag-to-pan, and double-click reset events to chart canvas."""
+        canvas.bind("<Enter>", lambda e: canvas.focus_set())
+        canvas.bind("<MouseWheel>", self._on_chart_mousewheel)
+        canvas.bind("<Button-4>", lambda e: self._on_chart_mousewheel_linux(e, 1))
+        canvas.bind("<Button-5>", lambda e: self._on_chart_mousewheel_linux(e, -1))
+        canvas.bind("<ButtonPress-1>", self._on_chart_pan_start)
+        canvas.bind("<B1-Motion>", self._on_chart_pan_motion)
+        canvas.bind("<ButtonRelease-1>", self._on_chart_pan_end)
+        canvas.bind("<Double-Button-1>", self._reset_chart_zoom)
+
+    def _on_chart_mousewheel_linux(self, event, direction):
+        event.delta = 120 * direction
+        self._on_chart_mousewheel(event)
+
+    def _on_chart_mousewheel(self, event):
+        """Handle cursor-centered zoom for price (Ctrl+Wheel), time (Shift+Wheel), or proportional (Wheel)."""
+        delta = getattr(event, "delta", 0)
+        if delta == 0:
+            return
+        factor = 1.15 if delta > 0 else (1.0 / 1.15)
+
+        ctrl_pressed = bool(getattr(event, "state", 0) & 0x0004)
+        shift_pressed = bool(getattr(event, "state", 0) & 0x0001)
+
+        w = event.widget.winfo_width() if event.widget.winfo_width() >= 50 else 500
+        h = event.widget.winfo_height() if event.widget.winfo_height() >= 50 else 350
+        pad_left = 60
+        pad_right = 20
+        pad_top = 25
+        pad_bottom = 35
+        plot_w = max(10, w - pad_left - pad_right)
+        plot_h = max(10, h - pad_top - pad_bottom)
+
+        y_rel = min(1.0, max(0.0, (event.y - pad_top) / plot_h)) if plot_h > 0 else 0.5
+        x_rel = min(1.0, max(0.0, (event.x - pad_left) / plot_w)) if plot_w > 0 else 0.5
+
+        if ctrl_pressed and not shift_pressed:
+            zoom_y_active = True
+            zoom_x_active = False
+        elif shift_pressed and not ctrl_pressed:
+            zoom_y_active = False
+            zoom_x_active = True
+        else:
+            zoom_y_active = True
+            zoom_x_active = True
+
+        if zoom_y_active:
+            old_zoom_y = self.zoom_y
+            new_zoom_y = min(10.0, max(0.5, old_zoom_y * factor))
+            if new_zoom_y != old_zoom_y and getattr(self, "_cached_base_range", 0) > 0:
+                base_range = self._cached_base_range
+                orig_mid = self._cached_orig_mid
+                old_range = base_range / old_zoom_y
+                old_mid = orig_mid + self.pan_y
+                price_at_cursor = (old_mid + 0.5 * old_range) - y_rel * old_range
+                new_range = base_range / new_zoom_y
+                self.pan_y = price_at_cursor - (0.5 - y_rel) * new_range - orig_mid
+                self.zoom_y = new_zoom_y
+
+        if zoom_x_active:
+            old_zoom_x = self.zoom_x
+            new_zoom_x = min(10.0, max(0.5, old_zoom_x * factor))
+            if new_zoom_x != old_zoom_x and getattr(self, "_cached_total_steps", 0) > 0:
+                total_steps = self._cached_total_steps
+                old_vis_steps = total_steps / old_zoom_x
+                step_at_cursor = self.pan_x + x_rel * old_vis_steps
+                new_vis_steps = total_steps / new_zoom_x
+                self.pan_x = step_at_cursor - x_rel * new_vis_steps
+                self.zoom_x = new_zoom_x
+
+        self._redraw_active_charts()
+
+    def _on_chart_pan_start(self, event):
+        self._pan_start_x = event.x
+        self._pan_start_y = event.y
+        self._is_panning = True
+        try:
+            event.widget.configure(cursor="fleur")
+        except Exception:
+            pass
+
+    def _on_chart_pan_motion(self, event):
+        if not getattr(self, "_is_panning", False):
+            return
+        dx = event.x - self._pan_start_x
+        dy = event.y - self._pan_start_y
+        self._pan_start_x = event.x
+        self._pan_start_y = event.y
+
+        if getattr(self, "_cached_plot_h", 0) > 0 and getattr(self, "_cached_vis_price_range", 0) > 0:
+            d_price = (dy / self._cached_plot_h) * self._cached_vis_price_range
+            self.pan_y += d_price
+
+        if getattr(self, "_cached_plot_w", 0) > 0 and getattr(self, "_cached_vis_steps", 0) > 0:
+            d_steps = -(dx / self._cached_plot_w) * self._cached_vis_steps
+            self.pan_x += d_steps
+
+        self._redraw_active_charts()
+
+    def _on_chart_pan_end(self, event):
+        self._is_panning = False
+        try:
+            event.widget.configure(cursor="")
+        except Exception:
+            pass
+
+    def _reset_chart_zoom(self, event=None):
+        """Reset chart zoom and pan to 100% auto-fit."""
+        self.zoom_y = 1.0
+        self.zoom_x = 1.0
+        self.pan_y = 0.0
+        self.pan_x = 0.0
+        self._redraw_active_charts()
+
+    def _zoom_step(self, factor):
+        """Keyboard shortcut zoom step."""
+        self.zoom_y = min(10.0, max(0.5, self.zoom_y * factor))
+        self.zoom_x = min(10.0, max(0.5, self.zoom_x * factor))
+        self._redraw_active_charts()
+
+    def _redraw_active_charts(self):
+        """Redraw active chart canvases according to current mode."""
+        if self.active_mode == "auto":
+            self._draw_dual_charts()
+        else:
+            self._draw_manual_chart()
+
+    def _extract_chart_bounds(self, sim_res):
+        try:
+            fan = sim_res.get("fan_data", {})
+            plan = sim_res.get("plan", {})
+            p5 = fan.get("p5", [])
+            p95 = fan.get("p95", [])
+            entry = plan.get("entry")
+            stop = plan.get("stop")
+            target = plan.get("target")
+            vals = list(p5) + list(p95)
+            for v in (entry, stop, target):
+                if v is not None:
+                    vals.append(v)
+            return vals
+        except Exception:
+            return []
+
     def _draw_dual_charts(self):
         if not self.dual_results:
             return
-        self._render_cone(self.buy_canvas, self.dual_results["buy"], is_buy=True)
-        self._render_cone(self.sell_canvas, self.dual_results["sell"], is_buy=False)
 
-    def _render_cone(self, canvas, sim_res, is_buy):
+        buy_res = self.dual_results.get("buy")
+        sell_res = self.dual_results.get("sell")
+
+        shared_bounds = None
+        if buy_res and sell_res:
+            b_vals = self._extract_chart_bounds(buy_res)
+            s_vals = self._extract_chart_bounds(sell_res)
+            comb = b_vals + s_vals
+            if comb:
+                shared_bounds = (min(comb), max(comb))
+        elif buy_res:
+            b_vals = self._extract_chart_bounds(buy_res)
+            if b_vals:
+                shared_bounds = (min(b_vals), max(b_vals))
+        elif sell_res:
+            s_vals = self._extract_chart_bounds(sell_res)
+            if s_vals:
+                shared_bounds = (min(s_vals), max(s_vals))
+
+        if buy_res:
+            self._render_cone(self.buy_canvas, buy_res, is_buy=True, price_bounds=shared_bounds)
+        if sell_res:
+            self._render_cone(self.sell_canvas, sell_res, is_buy=False, price_bounds=shared_bounds)
+
+    def _render_cone(self, canvas, sim_res, is_buy, price_bounds=None):
         canvas.delete("all")
         w = canvas.winfo_width()
         h = canvas.winfo_height()
+        if w < 50:
+            w = canvas.winfo_reqwidth()
+        if h < 50:
+            h = canvas.winfo_reqheight()
         if w < 50 or h < 50:
             return
 
@@ -1172,8 +1409,8 @@ class TimeMachineProGUI:
         pad_top = 25
         pad_bottom = 35
 
-        plot_w = w - pad_left - pad_right
-        plot_h = h - pad_top - pad_bottom
+        plot_w = max(10, w - pad_left - pad_right)
+        plot_h = max(10, h - pad_top - pad_bottom)
 
         fan = sim_res["fan_data"]
         plan = sim_res["plan"]
@@ -1190,45 +1427,180 @@ class TimeMachineProGUI:
         stop = plan["stop"]
         target = plan["target"]
 
-        all_vals = p5 + p95 + [entry, stop, target]
-        min_p = min(all_vals)
-        max_p = max(all_vals)
-        margin = max(1.0, (max_p - min_p) * 0.08)
-        min_p -= margin
-        max_p += margin
+        if price_bounds:
+            base_min_p, base_max_p = price_bounds
+        else:
+            all_vals = p5 + p95 + [entry, stop, target]
+            base_min_p = min(all_vals)
+            base_max_p = max(all_vals)
+
+        margin = max(1.0, (base_max_p - base_min_p) * 0.08)
+        base_min_p -= margin
+        base_max_p += margin
+        base_range = max(0.01, base_max_p - base_min_p)
+        orig_mid = 0.5 * (base_min_p + base_max_p)
+
+        # Store cache for zoom/pan calculations
+        self._cached_base_range = base_range
+        self._cached_orig_mid = orig_mid
+        total_steps = float(steps[-1]) if steps[-1] > 0 else 1.0
+        self._cached_total_steps = total_steps
+        self._cached_plot_w = plot_w
+        self._cached_plot_h = plot_h
+
+        # Apply zoom_y and pan_y
+        zoom_y = getattr(self, "zoom_y", 1.0)
+        pan_y = getattr(self, "pan_y", 0.0)
+        vis_price_range = base_range / max(0.2, zoom_y)
+        self._cached_vis_price_range = vis_price_range
+        cur_mid = orig_mid + pan_y
+        min_p = cur_mid - 0.5 * vis_price_range
+        max_p = cur_mid + 0.5 * vis_price_range
+
+        # Apply zoom_x and pan_x
+        zoom_x = getattr(self, "zoom_x", 1.0)
+        pan_x = getattr(self, "pan_x", 0.0)
+        vis_steps = total_steps / max(0.2, zoom_x)
+        self._cached_vis_steps = vis_steps
+        min_step = pan_x
+        max_step = pan_x + vis_steps
 
         def to_x(s_val):
-            return pad_left + (s_val / steps[-1]) * plot_w
+            return pad_left + ((s_val - min_step) / vis_steps) * plot_w
 
         def to_y(pr):
             return pad_top + (1.0 - (pr - min_p) / (max_p - min_p)) * plot_h
 
-        # Grid lines
-        grid_lines_count = 50 if getattr(self, "grid_lines_var", None) and self.grid_lines_var.get() == "50 Lines" else 25
-        for i in range(grid_lines_count):
-            y_val = min_p + (max_p - min_p) * (i / (grid_lines_count - 1.0))
-            y_px = to_y(y_val)
-            canvas.create_line(pad_left, y_px, w - pad_right, y_px, fill="#1c2536", dash=(2, 4))
-            canvas.create_text(pad_left - 6, y_px, text=f"${y_val:.2f}", fill=TEXT_MUTED, font=("Segoe UI", 8), anchor="e")
+        # 1. 90% Ribbon
+        poly_90 = []
+        for s, v in zip(steps, p95):
+            poly_90.extend([to_x(s), to_y(v)])
+        for s, v in reversed(list(zip(steps, p5))):
+            poly_90.extend([to_x(s), to_y(v)])
+        if len(poly_90) >= 6:
+            canvas.create_polygon(poly_90, fill="#182232", outline="")
 
-        # Time ticks - dynamically scaled by interval
+        # 2. 50% Ribbon
+        poly_50 = []
+        for s, v in zip(steps, p75):
+            poly_50.extend([to_x(s), to_y(v)])
+        for s, v in reversed(list(zip(steps, p25))):
+            poly_50.extend([to_x(s), to_y(v)])
+        if len(poly_50) >= 6:
+            canvas.create_polygon(poly_50, fill="#233147", outline="")
+
+        # 3. Sample Paths
+        for path in sample_paths[:12]:
+            pts = []
+            for step_idx, pr in enumerate(path):
+                if step_idx < len(steps):
+                    pts.extend([to_x(steps[step_idx]), to_y(pr)])
+            if len(pts) >= 4:
+                canvas.create_line(pts, fill="#324563", width=1)
+
+        # 4. Median
+        med_pts = []
+        for s, v in zip(steps, p50):
+            med_pts.extend([to_x(s), to_y(v)])
+        if len(med_pts) >= 4:
+            canvas.create_line(med_pts, fill=GOLD, width=2)
+
+        # 5. Mask outer margins cleanly so no ribbons or paths bleed outside the plot area
+        canvas.create_rectangle(0, 0, pad_left, h, fill="#0f141d", outline="")
+        canvas.create_rectangle(w - pad_right, 0, w, h, fill="#0f141d", outline="")
+        canvas.create_rectangle(0, 0, w, pad_top, fill="#0f141d", outline="")
+        canvas.create_rectangle(0, h - pad_bottom, w, h, fill="#0f141d", outline="")
+
+        # Plot outer boundary box
+        canvas.create_rectangle(pad_left, pad_top, w - pad_right, h - pad_bottom, outline="#1e293b", width=1)
+
+        # 6. Dynamic Price Grid Lines & Labels
+        grid_pref = getattr(self, "grid_lines_var", None)
+        grid_mode = grid_pref.get() if grid_pref else "Dynamic Adaptive (Default)"
+
+        if "50" in grid_mode:
+            raw_step = (max_p - min_p) / 50.0
+            step = self._nice_grid_step(raw_step)
+        elif "25" in grid_mode:
+            raw_step = (max_p - min_p) / 25.0
+            step = self._nice_grid_step(raw_step)
+        else:
+            # Dynamic Adaptive: density automatically increases with zoom
+            spacing = max(24.0, 42.0 / (zoom_y ** 0.35))
+            target_count = max(4, int(round(plot_h / spacing)))
+            raw_step = (max_p - min_p) / target_count
+            step = self._nice_grid_step(raw_step)
+
+        start_k = math.floor(min_p / step)
+        end_k = math.ceil(max_p / step)
+        for k in range(start_k, end_k + 1):
+            y_val = round(k * step, 6)
+            y_px = to_y(y_val)
+            if pad_top <= y_px <= h - pad_bottom:
+                canvas.create_line(pad_left, y_px, w - pad_right, y_px, fill="#1c2536", dash=(2, 4))
+                if step < 0.05:
+                    lbl_txt = f"${y_val:.2f}"
+                elif step < 1.0:
+                    lbl_txt = f"${y_val:.1f}" if abs(y_val * 10 - round(y_val * 10)) < 1e-4 else f"${y_val:.2f}"
+                else:
+                    lbl_txt = f"${int(round(y_val))}" if abs(y_val - round(y_val)) < 1e-4 else f"${y_val:.1f}"
+                canvas.create_text(pad_left - 6, y_px, text=lbl_txt, fill=TEXT_MUTED, font=("Segoe UI", 8), anchor="e")
+
+        # 7. Dynamic Time Ticks & Grid Lines
         meta = sim_res.get("meta", {}) or sim_res.get("plan", {})
         int_m = meta.get("interval_minutes", 1 if self.current_timeframe == "M1" else 5)
         total_hours = steps[-1] * int_m / 60
         is_multiday = total_hours >= 24.0
-        for i in range(4):
-            bar_val = steps[-1] * (i / 3.0)
-            x_px = to_x(bar_val)
-            canvas.create_line(x_px, pad_top, x_px, h - pad_bottom, fill="#1c2536", dash=(2, 4))
-            if is_multiday:
-                t_lbl = f"+{bar_val * int_m / 1440:.1f}d"
-            elif total_hours < 1.0:
-                t_lbl = f"+{int(round(bar_val * int_m))}m"
-            else:
-                t_lbl = f"+{bar_val * int_m / 60:.1f}h"
-            canvas.create_text(x_px, h - pad_bottom + 12, text=t_lbl, fill=TEXT_MUTED, font=("Segoe UI", 8))
 
-        # Methodology & Timeframe Tag Badge
+        target_x_count = max(3, int(round(plot_w / 80.0)))
+        raw_x_step = vis_steps / target_x_count
+        x_step = max(1.0, self._nice_grid_step(raw_x_step))
+
+        start_step_k = math.floor(min_step / x_step)
+        end_step_k = math.ceil(max_step / x_step)
+        for k in range(start_step_k, end_step_k + 1):
+            bar_val = round(k * x_step, 4)
+            if bar_val < 0 or bar_val > steps[-1]:
+                continue
+            x_px = to_x(bar_val)
+            if pad_left <= x_px <= w - pad_right:
+                canvas.create_line(x_px, pad_top, x_px, h - pad_bottom, fill="#1c2536", dash=(2, 4))
+                bar_minutes = bar_val * int_m
+                if is_multiday and bar_minutes >= 1440:
+                    t_lbl = f"+{bar_minutes / 1440:.1f}d"
+                elif bar_minutes >= 60:
+                    t_lbl = f"+{bar_minutes / 60:.1f}h"
+                else:
+                    t_lbl = f"+{int(round(bar_minutes))}m"
+                canvas.create_text(x_px, h - pad_bottom + 12, text=t_lbl, fill=TEXT_MUTED, font=("Segoe UI", 8))
+
+        # 8. Target, Stop, Entry lines & off-screen markers
+        y_tp = to_y(target)
+        if pad_top <= y_tp <= h - pad_bottom:
+            canvas.create_line(pad_left, y_tp, w - pad_right, y_tp, fill=GREEN, width=2, dash=(6, 4))
+            canvas.create_text(w - pad_right - 6, y_tp - 10, text=f"TP ${target:.2f} (+{plan.get('target_r', 0.0):.2f}R)", fill=GREEN, font=("Segoe UI", 9, "bold"), anchor="e")
+        elif y_tp < pad_top:
+            canvas.create_text(w - pad_right - 6, pad_top + 12, text=f"▲ TP ${target:.2f} (+{plan.get('target_r', 0.0):.1f}R)", fill=GREEN, font=("Segoe UI", 8, "bold"), anchor="e")
+        elif y_tp > h - pad_bottom:
+            canvas.create_text(w - pad_right - 6, h - pad_bottom - 12, text=f"▼ TP ${target:.2f} (+{plan.get('target_r', 0.0):.1f}R)", fill=GREEN, font=("Segoe UI", 8, "bold"), anchor="e")
+
+        y_sl = to_y(stop)
+        if pad_top <= y_sl <= h - pad_bottom:
+            canvas.create_line(pad_left, y_sl, w - pad_right, y_sl, fill=RED, width=2, dash=(6, 4))
+            canvas.create_text(w - pad_right - 6, y_sl + 10, text=f"SL ${stop:.2f} (-1.0R)", fill=RED, font=("Segoe UI", 9, "bold"), anchor="e")
+        elif y_sl < pad_top:
+            canvas.create_text(w - pad_right - 6, pad_top + 24, text=f"▲ SL ${stop:.2f} (-1.0R)", fill=RED, font=("Segoe UI", 8, "bold"), anchor="e")
+        elif y_sl > h - pad_bottom:
+            canvas.create_text(w - pad_right - 6, h - pad_bottom - 24, text=f"▼ SL ${stop:.2f} (-1.0R)", fill=RED, font=("Segoe UI", 8, "bold"), anchor="e")
+
+        y_en = to_y(entry)
+        limit_lbl = "Buy Limit" if is_buy else "Sell Limit"
+        tag_str = f" [{plan['setup_tag']}]" if plan.get("setup_tag") else ""
+        if pad_top <= y_en <= h - pad_bottom:
+            canvas.create_line(pad_left, y_en, w - pad_right, y_en, fill="#ffffff", width=1, dash=(3, 3))
+            canvas.create_text(pad_left + 8, y_en - 8, text=f"{limit_lbl}{tag_str} ${entry:.2f}", fill="#ffffff", font=("Segoe UI", 8, "bold"), anchor="w")
+
+        # 9. Methodology Badge
         proj_mode = meta.get("projection_mode", "free_drift")
         tb_mode = meta.get("tie_break", "smart")
         pm_tag = ("Block Bootstrap V2" if proj_mode == "block_bootstrap" else
@@ -1242,49 +1614,15 @@ class TimeMachineProGUI:
             fill="#64748b", font=("Segoe UI", 8), anchor="w"
         )
 
-        # 90% Ribbon
-        poly_90 = []
-        for s, v in zip(steps, p95): poly_90.extend([to_x(s), to_y(v)])
-        for s, v in reversed(list(zip(steps, p5))): poly_90.extend([to_x(s), to_y(v)])
-        if len(poly_90) >= 6:
-            canvas.create_polygon(poly_90, fill="#182232", outline="")
-
-        # 50% Ribbon
-        poly_50 = []
-        for s, v in zip(steps, p75): poly_50.extend([to_x(s), to_y(v)])
-        for s, v in reversed(list(zip(steps, p25))): poly_50.extend([to_x(s), to_y(v)])
-        if len(poly_50) >= 6:
-            canvas.create_polygon(poly_50, fill="#233147", outline="")
-
-        # Sample Paths
-        for path in sample_paths[:12]:
-            pts = []
-            for step_idx, pr in enumerate(path):
-                if step_idx < len(steps):
-                    pts.extend([to_x(steps[step_idx]), to_y(pr)])
-            if len(pts) >= 4:
-                canvas.create_line(pts, fill="#324563", width=1)
-
-        # Median
-        med_pts = []
-        for s, v in zip(steps, p50): med_pts.extend([to_x(s), to_y(v)])
-        if len(med_pts) >= 4:
-            canvas.create_line(med_pts, fill=GOLD, width=2)
-
-        # Target & Stop lines
-        y_tp = to_y(target)
-        canvas.create_line(pad_left, y_tp, w - pad_right, y_tp, fill=GREEN, width=2, dash=(6, 4))
-        canvas.create_text(w - pad_right, y_tp - 10, text=f"TP ${target:.2f} (+{plan.get('target_r', 0.0):.2f}R)", fill=GREEN, font=("Segoe UI", 9, "bold"), anchor="e")
-
-        y_sl = to_y(stop)
-        canvas.create_line(pad_left, y_sl, w - pad_right, y_sl, fill=RED, width=2, dash=(6, 4))
-        canvas.create_text(w - pad_right, y_sl + 10, text=f"SL ${stop:.2f} (-1.0R)", fill=RED, font=("Segoe UI", 9, "bold"), anchor="e")
-
-        y_en = to_y(entry)
-        limit_lbl = "Buy Limit" if is_buy else "Sell Limit"
-        tag_str = f" [{plan['setup_tag']}]" if plan.get("setup_tag") else ""
-        canvas.create_line(pad_left, y_en, w - pad_right, y_en, fill="#ffffff", width=1, dash=(3, 3))
-        canvas.create_text(pad_left + 8, y_en - 8, text=f"{limit_lbl}{tag_str} ${entry:.2f}", fill="#ffffff", font=("Segoe UI", 8, "bold"), anchor="w")
+        # 10. Zoom Status Badge
+        is_zoomed_or_panned = (abs(zoom_y - 1.0) > 0.02 or abs(zoom_x - 1.0) > 0.02 or
+                               abs(pan_y) > 0.1 or abs(pan_x) > 0.1)
+        if is_zoomed_or_panned:
+            canvas.create_text(
+                w - pad_right - 8, pad_top - 10,
+                text=f"🔍 Zoom: {int(round(zoom_y * 100))}% Y | {int(round(zoom_x * 100))}% X  (Double-Click to Reset)",
+                fill=GOLD, font=("Segoe UI", 8, "bold"), anchor="e"
+            )
 
     # ========================== MANUAL SINGLE SIMULATION ==========================
     def _set_direction(self, direction):
@@ -1495,7 +1833,9 @@ class TimeMachineProGUI:
             if saved_engine in self.engine_mode_combo["values"]:
                 self.engine_mode_var.set(saved_engine)
 
-            saved_grid_lines = settings.get("grid_lines", "25 Lines (Default)")
+            saved_grid_lines = settings.get("grid_lines", "Dynamic Adaptive (Default)")
+            if saved_grid_lines == "25 Lines (Default)":
+                saved_grid_lines = "Dynamic Adaptive (Default)"
             if saved_grid_lines in self.grid_lines_combo["values"]:
                 self.grid_lines_var.set(saved_grid_lines)
 

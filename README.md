@@ -37,6 +37,22 @@ Inspired by Jake Schincariol's `trader-timemachine` from [day-trader-skill](http
 7. **💾 Auto-Save Settings Persistence**:
    - Seluruh preferensi pengguna (mode, data source, timeframe, horizon, replays, spread buffer, pilihan metodologi statistik, hingga level angka manual) **otomatis tersimpan saat aplikasi ditutup**.
    - Saat aplikasi dibuka kembali, pengaturan terakhir langsung terisi otomatis tanpa perlu disetel ulang dari nol.
+8. **🔍 Interactive Chart Zoom & Dynamic Adaptive Price Grid**:
+   - **Interactive Navigation & Shortcuts:**
+     - `Ctrl` + Scroll Mouse Wheel: Zoom vertikal pada sumbu harga (*Price / Y-axis*).
+     - `Shift` + Scroll Mouse Wheel: Zoom horizontal pada sumbu waktu (*Time / X-axis*).
+     - Regular Scroll Mouse Wheel: Zoom proporsional terpusat pada posisi kursor mouse (*cursor-centered*).
+     - Klik-Kiri Drag: Menggeser (*pan*) grafik secara bebas dengan pelacakan pergerakan kursor 1:1.
+     - Double-Click (atau `Ctrl` + `0`): Reset zoom dan posisi geser seketika kembali ke 100% (*Auto-Fit*).
+     - Tombol `[⟲ Reset Zoom]` langsung di header chart untuk kemudahan 1-klik.
+     - Hotkey Keyboard: `Ctrl` + `+` / `Ctrl` + `=` untuk zoom in, `Ctrl` + `-` untuk zoom out.
+   - **Dynamic Adaptive Price Grid:**
+     - Garis grid harga beradaptasi secara dinamis menggunakan algoritma *Nice Round Numbers* (angka bulat bersih kelipatan 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50).
+     - Semakin grafik dizoom-in, garis grid otomatis bertambah rapat dan detail; semakin dizoom-out, garis grid otomatis berkurang agar tetap rapi tanpa angka acak desimal tak beraturan.
+   - **Auto-Sync Dual Fan Charts:**
+     - Skala harga dan waktu pada grafik BUY (kiri) dan SELL (kanan) tersinkronisasi otomatis secara side-by-side, memudahkan perbandingan level harga langsung secara horizontal.
+   - **Off-Screen Target/Stop Indicators:**
+     - Menampilkan indikator penunjuk arah (`▲ TP` / `▼ SL`) di tepi layar jika level target atau stop loss berada di luar pandangan saat grafik dizoom-in secara mendalam.
 
 ---
 
