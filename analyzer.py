@@ -694,6 +694,122 @@ def _candidate_entries_absorption(side, metrics, bars):
     return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics)
 
 
+def _candidate_entries_footprint(side, metrics, bars):
+    """
+    Footprint (Order Flow) Proxy Strategy.
+    Setup A: Liquidity Sweep + Absorption (Delta/Volume proxy) + Displacement.
+    1. Identify SSL/BSL (Swing Low/High).
+    2. Price sweeps the level.
+    3. Absorption proxy: High volume on the sweep candle + long rejection wick (wick > 2x body).
+    4. Displacement/Reclaim: The candle closes back inside the range or the next candle displaces.
+    """
+    cur, atr = metrics["current_price"], metrics["atr"]
+    price_step = float(metrics.get("price_step", 0.01) or 0.01)
+    if not bars or len(bars) < 30:
+        return _candidate_entries_atr_swing(side, metrics)
+
+    recent = bars[-min(len(bars), 60):]
+    candidates = []
+
+    # Calculate volume moving average
+    vols = np.array([float(b.get("volume", b.get("tick_volume", 1.0)) or 1.0) for b in recent])
+    vol_ma = np.mean(vols) if len(vols) > 0 else 1.0
+
+    if side == "buy":
+        # Look for Sell-Side Liquidity (SSL) Sweep + Bid Absorption
+        for i in range(10, len(recent) - 1):
+            # 1. SSL: local swing low
+            if float(recent[i]["low"]) == min([float(b["low"]) for b in recent[i-5:i+6]]):
+                ssl = float(recent[i]["low"])
+
+                # 2 & 3. Sweep & Absorption Proxy
+                for j in range(i+6, len(recent)-1):
+                    bar_j = recent[j]
+                    low_j, high_j = float(bar_j["low"]), float(bar_j["high"])
+                    open_j, close_j = float(bar_j["open"]), float(bar_j["close"])
+                    vol_j = float(bar_j.get("volume", bar_j.get("tick_volume", 1.0)) or 1.0)
+
+                    if low_j < ssl:
+                        # Calculate body and lower wick
+                        body = abs(open_j - close_j)
+                        lower_wick = min(open_j, close_j) - low_j
+
+                        # Absorption Criteria:
+                        # High volume (Aggressive Sellers) + Long lower wick relative to body (Passive Bid Absorption)
+                        if vol_j > 1.2 * vol_ma and lower_wick > max(body * 1.5, 0.1 * atr):
+                            # 4. Displacement / Reclaim
+                            # Check if the close of this candle or the next is above the SSL
+                            bar_next = recent[j+1]
+                            next_close = float(bar_next["close"])
+                            next_open = float(bar_next["open"])
+
+                            reclaimed = (close_j > ssl) or (next_close > ssl and next_close > next_open)
+
+                            if reclaimed:
+                                entry_price = ssl
+                                if entry_price < cur - 0.05 * atr:
+                                    stop = low_j - 0.15 * atr
+                                    target = cur + max(atr, (entry_price - stop) * 2.0)
+                                    candidates.append(CandidateEntry(_round_to_step(entry_price, price_step), stop=stop, target=target, tag="Footprint Bid Absorption (Reclaim)"))
+
+                                    # Deeper entry inside the wick (where the absorption happened)
+                                    deep_entry = 0.5 * (ssl + low_j)
+                                    if deep_entry < cur - 0.05 * atr:
+                                        stop2 = low_j - 0.15 * atr
+                                        target2 = cur + max(atr, (deep_entry - stop2) * 2.5)
+                                        candidates.append(CandidateEntry(_round_to_step(deep_entry, price_step), stop=stop2, target=target2, tag="Footprint Bid Absorption (Deep Wick)"))
+    else:
+        # Look for Buy-Side Liquidity (BSL) Sweep + Ask Absorption
+        for i in range(10, len(recent) - 1):
+            # 1. BSL: local swing high
+            if float(recent[i]["high"]) == max([float(b["high"]) for b in recent[i-5:i+6]]):
+                bsl = float(recent[i]["high"])
+
+                # 2 & 3. Sweep & Absorption Proxy
+                for j in range(i+6, len(recent)-1):
+                    bar_j = recent[j]
+                    low_j, high_j = float(bar_j["low"]), float(bar_j["high"])
+                    open_j, close_j = float(bar_j["open"]), float(bar_j["close"])
+                    vol_j = float(bar_j.get("volume", bar_j.get("tick_volume", 1.0)) or 1.0)
+
+                    if high_j > bsl:
+                        # Calculate body and upper wick
+                        body = abs(open_j - close_j)
+                        upper_wick = high_j - max(open_j, close_j)
+
+                        # Absorption Criteria:
+                        # High volume (Aggressive Buyers) + Long upper wick relative to body (Passive Ask Absorption)
+                        if vol_j > 1.2 * vol_ma and upper_wick > max(body * 1.5, 0.1 * atr):
+                            # 4. Displacement / Reclaim
+                            bar_next = recent[j+1]
+                            next_close = float(bar_next["close"])
+                            next_open = float(bar_next["open"])
+
+                            reclaimed = (close_j < bsl) or (next_close < bsl and next_close < next_open)
+
+                            if reclaimed:
+                                entry_price = bsl
+                                if entry_price > cur + 0.05 * atr:
+                                    stop = high_j + 0.15 * atr
+                                    target = cur - max(atr, (stop - entry_price) * 2.0)
+                                    candidates.append(CandidateEntry(_round_to_step(entry_price, price_step), stop=stop, target=target, tag="Footprint Ask Absorption (Reclaim)"))
+
+                                    deep_entry = 0.5 * (bsl + high_j)
+                                    if deep_entry > cur + 0.05 * atr:
+                                        stop2 = high_j + 0.15 * atr
+                                        target2 = cur - max(atr, (stop2 - deep_entry) * 2.5)
+                                        candidates.append(CandidateEntry(_round_to_step(deep_entry, price_step), stop=stop2, target=target2, tag="Footprint Ask Absorption (Deep Wick)"))
+
+    seen = set()
+    deduped = []
+    candidates.sort(key=lambda x: abs(float(x) - cur))
+    for c in candidates:
+        if float(c) not in seen and (c < cur if side == "buy" else c > cur):
+            seen.add(float(c))
+            deduped.append(c)
+    return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics)
+
+
 def _candidate_entries(side, metrics, bars=None, strategy="atr_swing"):
     """Dispatcher to build candidate limits based on selected strategy."""
     strat = str(strategy or "atr_swing").strip().lower()
@@ -711,6 +827,8 @@ def _candidate_entries(side, metrics, bars=None, strategy="atr_swing"):
         return _candidate_entries_sweep_sms(side, metrics, bars or [])
     elif strat in ("absorption", "heatmap", "bubbles", "liquidity_absorption"):
         return _candidate_entries_absorption(side, metrics, bars or [])
+    elif strat in ("footprint", "orderflow", "delta_absorption"):
+        return _candidate_entries_footprint(side, metrics, bars or [])
     else:
         return _candidate_entries_atr_swing(side, metrics)
 
@@ -1178,7 +1296,10 @@ def find_dual_recommendations(
         "absorption": "absorption",
         "heatmap": "absorption",
         "bubbles": "absorption",
-        "liquidity_absorption": "absorption"
+        "liquidity_absorption": "absorption",
+        "footprint": "footprint",
+        "orderflow": "footprint",
+        "delta_absorption": "footprint"
     }
     normalized_strategy = strategy_map.get(strat_key, "atr_swing")
     strategy_labels = {
@@ -1189,7 +1310,8 @@ def find_dual_recommendations(
         "zscore": "Bollinger Bands Extremes (Z-Score)",
         "acc_ifvg": "Accumulation + Inverse FVG (IFVG)",
         "sweep_sms": "Liquidity Sweep + Market Structure Shift (SMS)",
-        "absorption": "Liquidity Absorption + Volume Bubbles"
+        "absorption": "Liquidity Absorption + Volume Bubbles",
+        "footprint": "Footprint (Order Flow) Bid/Ask Absorption Proxy"
     }
     strategy_label = strategy_labels.get(normalized_strategy, "ATR Pullback & Swing Structure")
 
