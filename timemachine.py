@@ -288,7 +288,7 @@ def run_simulation(
         # Check hits for currently active orders
         if side == "buy":
             hit_stop = (low_prices <= stop_loss) & active
-            hit_target = (high_prices >= (take_profit + spread)) & active
+            hit_target = (high_prices >= take_profit) & active
             hit_both = hit_stop & hit_target
             
             if np.any(hit_both):
@@ -310,7 +310,7 @@ def run_simulation(
                     hit_target = (hit_target & (~hit_both)) | (hit_both & (~sl_first))
         else:  # SELL
             hit_stop = ((high_prices + spread) >= stop_loss) & active
-            hit_target = (low_prices <= take_profit) & active
+            hit_target = ((low_prices + spread) <= take_profit) & active
             hit_both = hit_stop & hit_target
             
             if np.any(hit_both):

@@ -12,6 +12,7 @@ not model queue priority, bid/ask execution, liquidity, or guaranteed fills.
 import numpy as np
 import timemachine
 import engine_v2
+import datetime
 
 MAX_TPSL_COMBINATIONS = 20
 MAX_CANDIDATES_PER_SIDE = 100
@@ -273,9 +274,34 @@ def _candidate_entries_orb(side, metrics, bars):
     price_step = float(metrics.get("price_step", 0.01) or 0.01)
     if not bars or len(bars) < 20:
         return _candidate_entries_atr_swing(side, metrics)
-    lookback = min(len(bars), 36)
-    session_bars = bars[-lookback:]
-    orb_window = session_bars[:min(12, len(session_bars))]
+
+    # Find the start of the current or most recent major trading session
+    # Major sessions (UTC): Asia (00:00), London (08:00), NY (13:00/14:00 - using 13:00 as proxy)
+    session_starts = [0, 8, 13]
+    recent_bars = bars[-min(len(bars), 288):] # Look back up to 1 day
+
+    orb_window = []
+    # Search backwards for a session start boundary.
+    # To get the absolute start of the session, we find the first bar that matches the criteria
+    # by continuing to search backwards until we hit a bar from the previous hour.
+    found_start_idx = -1
+    for i in range(len(recent_bars) - 1, -1, -1):
+        dt = datetime.datetime.fromtimestamp(recent_bars[i]["timestamp"], tz=datetime.timezone.utc)
+        if dt.hour in session_starts and dt.minute < 30:
+            found_start_idx = i
+        elif found_start_idx != -1:
+            break
+
+    if found_start_idx != -1:
+        end_idx = min(len(recent_bars), found_start_idx + 12)
+        orb_window = recent_bars[found_start_idx:end_idx]
+
+    if not orb_window:
+        # Fallback to the original blind lookback if no clean session start found
+        lookback = min(len(bars), 36)
+        session_bars = bars[-lookback:]
+        orb_window = session_bars[:min(12, len(session_bars))]
+
     orb_high = float(max(b["high"] for b in orb_window))
     orb_low = float(min(b["low"] for b in orb_window))
     orb_mid = 0.5 * (orb_high + orb_low)

@@ -101,10 +101,10 @@ def run_simulation(entry_price, stop_loss, take_profit, side="buy",
         close = market * c
         if side == "buy":
             hit_sl = (low <= stop_loss) & active
-            hit_tp = (high >= take_profit + spread) & active
+            hit_tp = (high >= take_profit) & active
         else:
             hit_sl = (high + spread >= stop_loss) & active
-            hit_tp = (low <= take_profit) & active
+            hit_tp = ((low + spread) <= take_profit) & active
         both = hit_sl & hit_tp
         ambiguous |= both
         # Conservative primary outcome: ambiguous OHLC bars count as stop-first.
