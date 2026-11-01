@@ -257,6 +257,19 @@ class DualAutoSearchTests(unittest.TestCase):
         self.assertEqual(res["sell"]["plan"]["tp_points"], 3200)
         self.assertEqual(res["sell"]["plan"]["sl_points"], 800)
 
+    def test_strategies_produce_distinct_entries_and_tags(self):
+        bars = make_bars()
+        res_atr = analyzer.find_dual_recommendations(bars, horizon_bars=4, replays=100, strategy="atr_swing")
+        res_poc = analyzer.find_dual_recommendations(bars, horizon_bars=4, replays=100, strategy="poc")
+        res_zscore = analyzer.find_dual_recommendations(bars, horizon_bars=4, replays=100, strategy="zscore")
+        
+        self.assertTrue(bool(res_atr["buy"]["plan"].get("setup_tag")))
+        self.assertTrue(bool(res_poc["buy"]["plan"].get("setup_tag")))
+        self.assertTrue(bool(res_zscore["buy"]["plan"].get("setup_tag")))
+        
+        tags = {res_atr["buy"]["plan"]["setup_tag"], res_poc["buy"]["plan"]["setup_tag"], res_zscore["buy"]["plan"]["setup_tag"]}
+        self.assertGreater(len(tags), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

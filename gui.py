@@ -1139,12 +1139,14 @@ class TimeMachineProGUI:
         sp = res["sell"]["plan"]
         buy_tpsl_label = f"{bp['tp_points']}/{bp['sl_points']} pts" if "tp_points" in bp and "sl_points" in bp else "Auto ATR/Structure"
         sell_tpsl_label = f"{sp['tp_points']}/{sp['sl_points']} pts" if "tp_points" in sp and "sl_points" in sp else "Auto ATR/Structure"
+        bp_tag = f"[{bp['setup_tag']}] " if bp.get("setup_tag") else ""
+        sp_tag = f"[{sp['setup_tag']}] " if sp.get("setup_tag") else ""
         self.buy_odds_lbl.configure(
-            text=f"TP: {bo['target_first_pct']:.1f}% | Touch: {bp['entry_touch_probability_pct']:.0f}% | RR: 1:{bp['target_r']:.2f} | Adj.Exp: {bp['fill_adjusted_simulated_avg_r']:+.2f}R | TP/SL: {buy_tpsl_label}",
+            text=f"{bp_tag}TP: {bo['target_first_pct']:.1f}% | Touch: {bp['entry_touch_probability_pct']:.0f}% | RR: 1:{bp['target_r']:.2f} | Adj.Exp: {bp['fill_adjusted_simulated_avg_r']:+.2f}R | TP/SL: {buy_tpsl_label}",
             fg=GREEN if bp["fill_adjusted_simulated_avg_r"] > 0 else TEXT_MUTED
         )
         self.sell_odds_lbl.configure(
-            text=f"TP: {so['target_first_pct']:.1f}% | Touch: {sp['entry_touch_probability_pct']:.0f}% | RR: 1:{sp['target_r']:.2f} | Adj.Exp: {sp['fill_adjusted_simulated_avg_r']:+.2f}R | TP/SL: {sell_tpsl_label}",
+            text=f"{sp_tag}TP: {so['target_first_pct']:.1f}% | Touch: {sp['entry_touch_probability_pct']:.0f}% | RR: 1:{sp['target_r']:.2f} | Adj.Exp: {sp['fill_adjusted_simulated_avg_r']:+.2f}R | TP/SL: {sell_tpsl_label}",
             fg=RED if sp["fill_adjusted_simulated_avg_r"] > 0 else TEXT_MUTED
         )
 
@@ -1280,8 +1282,9 @@ class TimeMachineProGUI:
 
         y_en = to_y(entry)
         limit_lbl = "Buy Limit" if is_buy else "Sell Limit"
+        tag_str = f" [{plan['setup_tag']}]" if plan.get("setup_tag") else ""
         canvas.create_line(pad_left, y_en, w - pad_right, y_en, fill="#ffffff", width=1, dash=(3, 3))
-        canvas.create_text(pad_left + 8, y_en - 8, text=f"{limit_lbl} ${entry:.2f}", fill="#ffffff", font=("Segoe UI", 8, "bold"), anchor="w")
+        canvas.create_text(pad_left + 8, y_en - 8, text=f"{limit_lbl}{tag_str} ${entry:.2f}", fill="#ffffff", font=("Segoe UI", 8, "bold"), anchor="w")
 
     # ========================== MANUAL SINGLE SIMULATION ==========================
     def _set_direction(self, direction):

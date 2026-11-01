@@ -58,27 +58,54 @@ def calculate_market_metrics(bars, period=48):
     }
 
 
+class CandidateEntry(float):
+    """A float price level that carries strategy-specific stop, target, and tag metadata."""
+    def __new__(cls, price, stop=None, target=None, tag=""):
+        obj = super().__new__(cls, float(price))
+        obj.stop = float(stop) if stop is not None else None
+        obj.target = float(target) if target is not None else None
+        obj.tag = str(tag or "")
+        return obj
+
+
 def _candidate_entries_atr_swing(side, metrics):
     """Build a compact set of limit prices around ATR pullbacks and swing structure (Baseline / Default)."""
     cur, atr = metrics["current_price"], metrics["atr"]
     lo, hi = metrics["swing_low"], metrics["swing_high"]
     span = max(hi - lo, atr)
-    if side == "buy":
-        raw = [cur - atr * x for x in (0.25, 0.40, 0.60, 0.80, 1.0)]
-        raw += [lo + span * x for x in (0.15, 0.25, 0.35)]
-        valid = [x for x in raw if cur - 2.0 * atr <= x <= cur - 0.10 * atr]
-    else:
-        raw = [cur + atr * x for x in (0.25, 0.40, 0.60, 0.80, 1.0)]
-        raw += [hi - span * x for x in (0.15, 0.25, 0.35)]
-        valid = [x for x in raw if cur + 0.10 * atr <= x <= cur + 2.0 * atr]
-    # Snap levels to the configured price-point size when known.
     price_step = float(metrics.get("price_step", 0.01) or 0.01)
-    valid = sorted(set(_round_to_step(float(x), price_step) for x in valid),
-                   key=lambda x: abs(x - cur))
-    if not valid:
+
+    candidates = []
+    if side == "buy":
+        for factor, tag in [(0.35, "ATR Pullback 0.35"), (0.60, "ATR Pullback 0.60"), (0.85, "ATR Pullback 0.85")]:
+            p = cur - atr * factor
+            if cur - 2.5 * atr <= p <= cur - 0.05 * atr:
+                candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=tag))
+        for factor, tag in [(0.15, "Swing Low Support"), (0.30, "Swing Structure Mid")]:
+            p = lo + span * factor
+            if cur - 2.5 * atr <= p <= cur - 0.05 * atr:
+                candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=tag))
+    else:
+        for factor, tag in [(0.35, "ATR Premium 0.35"), (0.60, "ATR Premium 0.60"), (0.85, "ATR Premium 0.85")]:
+            p = cur + atr * factor
+            if cur + 0.05 * atr <= p <= cur + 2.5 * atr:
+                candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=tag))
+        for factor, tag in [(0.15, "Swing High Resistance"), (0.30, "Swing Structure Mid")]:
+            p = hi - span * factor
+            if cur + 0.05 * atr <= p <= cur + 2.5 * atr:
+                candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=tag))
+
+    if not candidates:
         fallback = cur - 0.5 * atr if side == "buy" else cur + 0.5 * atr
-        valid = [_round_to_step(fallback, price_step)]
-    return valid[:5]
+        candidates = [CandidateEntry(_round_to_step(fallback, price_step), tag="ATR Fallback")]
+
+    seen = set()
+    deduped = []
+    for c in candidates:
+        if float(c) not in seen and (c < cur if side == "buy" else c > cur):
+            seen.add(float(c))
+            deduped.append(c)
+    return deduped[:5]
 
 
 def _calculate_volume_profile(bars, lookback=60, num_bins=30):
@@ -88,16 +115,16 @@ def _calculate_volume_profile(bars, lookback=60, num_bins=30):
     lows = np.asarray([b["low"] for b in recent], dtype=float)
     closes = np.asarray([b["close"] for b in recent], dtype=float)
     vols = np.asarray([float(b.get("volume", b.get("tick_volume", 1.0)) or 1.0) for b in recent], dtype=float)
-    
+
     price_min = float(np.min(lows))
     price_max = float(np.max(highs))
     if price_max <= price_min:
         return {"poc": float(closes[-1]), "vah": price_max, "val": price_min}
-    
+
     bin_edges = np.linspace(price_min, price_max, num_bins + 1)
     bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
     bin_volumes = np.zeros(num_bins, dtype=float)
-    
+
     for b_high, b_low, vol in zip(highs, lows, vols):
         mask = (bin_edges[1:] >= b_low) & (bin_edges[:-1] <= b_high)
         overlap = np.count_nonzero(mask)
@@ -109,7 +136,7 @@ def _calculate_volume_profile(bars, lookback=60, num_bins=30):
 
     poc_idx = int(np.argmax(bin_volumes))
     poc_price = float(bin_centers[poc_idx])
-    
+
     total_vol = float(np.sum(bin_volumes))
     target_vol = 0.70 * total_vol
     acc_vol = float(bin_volumes[poc_idx])
@@ -125,7 +152,7 @@ def _calculate_volume_profile(bars, lookback=60, num_bins=30):
             acc_vol += bin_volumes[right]
         else:
             break
-            
+
     vah = float(bin_centers[right])
     val = float(bin_centers[left])
     return {"poc": poc_price, "vah": vah, "val": val}
@@ -140,31 +167,52 @@ def _candidate_entries_poc(side, metrics, bars):
     vp = _calculate_volume_profile(bars, lookback=60, num_bins=30)
     poc, vah, val = vp["poc"], vp["vah"], vp["val"]
 
-    raw = []
+    candidates = []
     if side == "buy":
-        if poc < cur - 0.08 * atr:
-            raw.append(poc)
-        if val < cur - 0.08 * atr:
-            raw.append(val)
-        if vah < cur - 0.08 * atr:
-            raw.append(vah)
-        raw.extend([cur - 0.30 * atr, cur - 0.60 * atr, cur - 0.90 * atr])
-        valid = [x for x in raw if cur - 2.5 * atr <= x <= cur - 0.08 * atr]
+        if poc < cur - 0.05 * atr:
+            stop = min(val, poc - 0.5 * atr) - 0.15 * atr
+            target = max(vah, poc + (poc - stop) * 2.0)
+            candidates.append(CandidateEntry(_round_to_step(poc, price_step), stop=stop, target=target, tag="POC Volume Cluster"))
+        if val < cur - 0.05 * atr and abs(val - poc) > 0.1 * atr:
+            stop = val - 0.35 * atr
+            target = max(poc, val + (val - stop) * 2.0)
+            candidates.append(CandidateEntry(_round_to_step(val, price_step), stop=stop, target=target, tag="VAL Support Retest"))
+        if vah < cur - 0.05 * atr:
+            stop = poc - 0.15 * atr
+            target = vah + (vah - stop) * 1.8
+            candidates.append(CandidateEntry(_round_to_step(vah, price_step), stop=stop, target=target, tag="VAH Breakout Retest"))
+        va_mid = 0.5 * (poc + val)
+        if va_mid < cur - 0.05 * atr:
+            stop = val - 0.20 * atr
+            target = vah
+            candidates.append(CandidateEntry(_round_to_step(va_mid, price_step), stop=stop, target=target, tag="Value Area Equilibrium"))
     else:
-        if poc > cur + 0.08 * atr:
-            raw.append(poc)
-        if vah > cur + 0.08 * atr:
-            raw.append(vah)
-        if val > cur + 0.08 * atr:
-            raw.append(val)
-        raw.extend([cur + 0.30 * atr, cur + 0.60 * atr, cur + 0.90 * atr])
-        valid = [x for x in raw if cur + 0.08 * atr <= x <= cur + 2.5 * atr]
+        if poc > cur + 0.05 * atr:
+            stop = max(vah, poc + 0.5 * atr) + 0.15 * atr
+            target = min(val, poc - (stop - poc) * 2.0)
+            candidates.append(CandidateEntry(_round_to_step(poc, price_step), stop=stop, target=target, tag="POC Volume Cluster"))
+        if vah > cur + 0.05 * atr and abs(vah - poc) > 0.1 * atr:
+            stop = vah + 0.35 * atr
+            target = min(poc, vah - (stop - vah) * 2.0)
+            candidates.append(CandidateEntry(_round_to_step(vah, price_step), stop=stop, target=target, tag="VAH Resistance Retest"))
+        if val > cur + 0.05 * atr:
+            stop = poc + 0.15 * atr
+            target = val - (stop - val) * 1.8
+            candidates.append(CandidateEntry(_round_to_step(val, price_step), stop=stop, target=target, tag="VAL Breakdown Retest"))
+        va_mid = 0.5 * (poc + vah)
+        if va_mid > cur + 0.05 * atr:
+            stop = vah + 0.20 * atr
+            target = val
+            candidates.append(CandidateEntry(_round_to_step(va_mid, price_step), stop=stop, target=target, tag="Value Area Equilibrium"))
 
-    valid = sorted(set(_round_to_step(float(x), price_step) for x in valid),
-                   key=lambda x: abs(x - cur))
-    if not valid:
-        return _candidate_entries_atr_swing(side, metrics)
-    return valid[:5]
+    seen = set()
+    deduped = []
+    candidates.sort(key=lambda x: abs(float(x) - cur))
+    for c in candidates:
+        if float(c) not in seen and (c < cur if side == "buy" else c > cur):
+            seen.add(float(c))
+            deduped.append(c)
+    return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics)
 
 
 def _candidate_entries_fvg(side, metrics, bars):
@@ -173,45 +221,50 @@ def _candidate_entries_fvg(side, metrics, bars):
     price_step = float(metrics.get("price_step", 0.01) or 0.01)
     if not bars or len(bars) < 20:
         return _candidate_entries_atr_swing(side, metrics)
-    recent = bars[-min(len(bars), 50):]
-    raw = []
+    recent = bars[-min(len(bars), 60):]
+    candidates = []
 
     if side == "buy":
         for i in range(2, len(recent)):
             gap_bottom = float(recent[i - 2]["high"])
             gap_top = float(recent[i]["low"])
-            if gap_top > gap_bottom + 0.05 * atr:
+            if gap_top > gap_bottom + 0.04 * atr and gap_top < cur - 0.05 * atr:
                 ce = 0.5 * (gap_bottom + gap_top)
-                if gap_top < cur:
-                    raw.extend([gap_top, ce, gap_bottom])
+                stop = gap_bottom - 0.15 * atr
+                target = cur + max(atr, (ce - stop) * 2.5)
+                candidates.append(CandidateEntry(_round_to_step(ce, price_step), stop=stop, target=target, tag="FVG 50% CE Midpoint"))
+                candidates.append(CandidateEntry(_round_to_step(gap_top, price_step), stop=stop, target=target, tag="FVG Top Mitigation"))
         for i in range(5, len(recent) - 1):
             prior_low = float(min(b["low"] for b in recent[max(0, i - 10):i]))
-            if float(recent[i]["low"]) < prior_low and float(recent[i]["close"]) > prior_low:
-                raw.append(float(recent[i]["low"]))
-                raw.append(prior_low)
-        raw.extend([cur - 0.35 * atr, cur - 0.70 * atr])
-        valid = [x for x in raw if cur - 2.5 * atr <= x <= cur - 0.08 * atr]
+            if float(recent[i]["low"]) < prior_low and float(recent[i]["close"]) > prior_low and prior_low < cur - 0.05 * atr:
+                stop = float(recent[i]["low"]) - 0.20 * atr
+                target = cur + max(atr, (prior_low - stop) * 2.0)
+                candidates.append(CandidateEntry(_round_to_step(prior_low, price_step), stop=stop, target=target, tag="Liquidity Sweep Reversal"))
     else:
         for i in range(2, len(recent)):
             gap_top = float(recent[i - 2]["low"])
             gap_bottom = float(recent[i]["high"])
-            if gap_top > gap_bottom + 0.05 * atr:
+            if gap_top > gap_bottom + 0.04 * atr and gap_bottom > cur + 0.05 * atr:
                 ce = 0.5 * (gap_bottom + gap_top)
-                if gap_bottom > cur:
-                    raw.extend([gap_bottom, ce, gap_top])
+                stop = gap_top + 0.15 * atr
+                target = cur - max(atr, (stop - ce) * 2.5)
+                candidates.append(CandidateEntry(_round_to_step(ce, price_step), stop=stop, target=target, tag="FVG 50% CE Midpoint"))
+                candidates.append(CandidateEntry(_round_to_step(gap_bottom, price_step), stop=stop, target=target, tag="FVG Bottom Mitigation"))
         for i in range(5, len(recent) - 1):
             prior_high = float(max(b["high"] for b in recent[max(0, i - 10):i]))
-            if float(recent[i]["high"]) > prior_high and float(recent[i]["close"]) < prior_high:
-                raw.append(float(recent[i]["high"]))
-                raw.append(prior_high)
-        raw.extend([cur + 0.35 * atr, cur + 0.70 * atr])
-        valid = [x for x in raw if cur + 0.08 * atr <= x <= cur + 2.5 * atr]
+            if float(recent[i]["high"]) > prior_high and float(recent[i]["close"]) < prior_high and prior_high > cur + 0.05 * atr:
+                stop = float(recent[i]["high"]) + 0.20 * atr
+                target = cur - max(atr, (stop - prior_high) * 2.0)
+                candidates.append(CandidateEntry(_round_to_step(prior_high, price_step), stop=stop, target=target, tag="Liquidity Sweep Reversal"))
 
-    valid = sorted(set(_round_to_step(float(x), price_step) for x in valid),
-                   key=lambda x: abs(x - cur))
-    if not valid:
-        return _candidate_entries_atr_swing(side, metrics)
-    return valid[:5]
+    seen = set()
+    deduped = []
+    candidates.sort(key=lambda x: abs(float(x) - cur))
+    for c in candidates:
+        if float(c) not in seen and (c < cur if side == "buy" else c > cur):
+            seen.add(float(c))
+            deduped.append(c)
+    return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics)
 
 
 def _candidate_entries_orb(side, metrics, bars):
@@ -226,32 +279,54 @@ def _candidate_entries_orb(side, metrics, bars):
     orb_high = float(max(b["high"] for b in orb_window))
     orb_low = float(min(b["low"] for b in orb_window))
     orb_mid = 0.5 * (orb_high + orb_low)
-    
-    raw = []
-    if side == "buy":
-        if orb_high < cur:
-            raw.append(orb_high)
-        if orb_mid < cur:
-            raw.append(orb_mid)
-        if orb_low < cur:
-            raw.append(orb_low)
-        raw.extend([cur - 0.25 * atr, cur - 0.50 * atr, cur - 0.85 * atr])
-        valid = [x for x in raw if cur - 2.5 * atr <= x <= cur - 0.08 * atr]
-    else:
-        if orb_low > cur:
-            raw.append(orb_low)
-        if orb_mid > cur:
-            raw.append(orb_mid)
-        if orb_high > cur:
-            raw.append(orb_high)
-        raw.extend([cur + 0.25 * atr, cur + 0.50 * atr, cur + 0.85 * atr])
-        valid = [x for x in raw if cur + 0.08 * atr <= x <= cur + 2.5 * atr]
+    orb_span = max(orb_high - orb_low, 0.5 * atr)
 
-    valid = sorted(set(_round_to_step(float(x), price_step) for x in valid),
-                   key=lambda x: abs(x - cur))
-    if not valid:
-        return _candidate_entries_atr_swing(side, metrics)
-    return valid[:5]
+    candidates = []
+    if side == "buy":
+        if orb_high < cur - 0.05 * atr:
+            stop = orb_mid - 0.15 * atr
+            target = orb_high + orb_span * 1.5
+            candidates.append(CandidateEntry(_round_to_step(orb_high, price_step), stop=stop, target=target, tag="ORB High Retest Support"))
+        if orb_mid < cur - 0.05 * atr:
+            stop = orb_low - 0.15 * atr
+            target = orb_high + orb_span * 0.8
+            candidates.append(CandidateEntry(_round_to_step(orb_mid, price_step), stop=stop, target=target, tag="ORB Equilibrium Retest"))
+        if orb_low < cur - 0.05 * atr:
+            stop = orb_low - 0.35 * atr
+            target = orb_high
+            candidates.append(CandidateEntry(_round_to_step(orb_low, price_step), stop=stop, target=target, tag="ORB Low Range Bounce"))
+        ext_low = orb_low - 0.5 * orb_span
+        if ext_low < cur - 0.05 * atr:
+            stop = ext_low - 0.30 * atr
+            target = orb_mid
+            candidates.append(CandidateEntry(_round_to_step(ext_low, price_step), stop=stop, target=target, tag="ORB Extension Discount"))
+    else:
+        if orb_low > cur + 0.05 * atr:
+            stop = orb_mid + 0.15 * atr
+            target = orb_low - orb_span * 1.5
+            candidates.append(CandidateEntry(_round_to_step(orb_low, price_step), stop=stop, target=target, tag="ORB Low Retest Resistance"))
+        if orb_mid > cur + 0.05 * atr:
+            stop = orb_high + 0.15 * atr
+            target = orb_low - orb_span * 0.8
+            candidates.append(CandidateEntry(_round_to_step(orb_mid, price_step), stop=stop, target=target, tag="ORB Equilibrium Retest"))
+        if orb_high > cur + 0.05 * atr:
+            stop = orb_high + 0.35 * atr
+            target = orb_low
+            candidates.append(CandidateEntry(_round_to_step(orb_high, price_step), stop=stop, target=target, tag="ORB High Range Rejection"))
+        ext_high = orb_high + 0.5 * orb_span
+        if ext_high > cur + 0.05 * atr:
+            stop = ext_high + 0.30 * atr
+            target = orb_mid
+            candidates.append(CandidateEntry(_round_to_step(ext_high, price_step), stop=stop, target=target, tag="ORB Extension Premium"))
+
+    seen = set()
+    deduped = []
+    candidates.sort(key=lambda x: abs(float(x) - cur))
+    for c in candidates:
+        if float(c) not in seen and (c < cur if side == "buy" else c > cur):
+            seen.add(float(c))
+            deduped.append(c)
+    return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics)
 
 
 def _candidate_entries_zscore(side, metrics, bars):
@@ -265,28 +340,49 @@ def _candidate_entries_zscore(side, metrics, bars):
     mean = float(np.mean(closes))
     std = float(np.std(closes))
     std = max(std, 0.25 * atr)
-    
-    raw = []
-    if side == "buy":
-        raw.append(mean - 1.5 * std)
-        raw.append(mean - 2.0 * std)
-        raw.append(mean - 2.5 * std)
-        raw.append(cur - 0.30 * atr)
-        raw.append(cur - 0.70 * atr)
-        valid = [x for x in raw if cur - 2.5 * atr <= x <= cur - 0.08 * atr]
-    else:
-        raw.append(mean + 1.5 * std)
-        raw.append(mean + 2.0 * std)
-        raw.append(mean + 2.5 * std)
-        raw.append(cur + 0.30 * atr)
-        raw.append(cur + 0.70 * atr)
-        valid = [x for x in raw if cur + 0.08 * atr <= x <= cur + 2.5 * atr]
 
-    valid = sorted(set(_round_to_step(float(x), price_step) for x in valid),
-                   key=lambda x: abs(x - cur))
-    if not valid:
-        return _candidate_entries_atr_swing(side, metrics)
-    return valid[:5]
+    candidates = []
+    if side == "buy":
+        b20 = mean - 2.0 * std
+        if b20 < cur - 0.05 * atr:
+            stop = mean - 3.2 * std
+            target = mean
+            candidates.append(CandidateEntry(_round_to_step(b20, price_step), stop=stop, target=target, tag="Bollinger -2.0 Sigma Lower Band"))
+        b25 = mean - 2.5 * std
+        if b25 < cur - 0.05 * atr:
+            stop = mean - 3.8 * std
+            target = mean - 0.5 * std
+            candidates.append(CandidateEntry(_round_to_step(b25, price_step), stop=stop, target=target, tag="Bollinger -2.5 Sigma Extreme Oversold"))
+        b15 = mean - 1.5 * std
+        if b15 < cur - 0.05 * atr:
+            stop = mean - 2.5 * std
+            target = mean + 0.5 * std
+            candidates.append(CandidateEntry(_round_to_step(b15, price_step), stop=stop, target=target, tag="Bollinger -1.5 Sigma Dynamic Support"))
+    else:
+        b20 = mean + 2.0 * std
+        if b20 > cur + 0.05 * atr:
+            stop = mean + 3.2 * std
+            target = mean
+            candidates.append(CandidateEntry(_round_to_step(b20, price_step), stop=stop, target=target, tag="Bollinger +2.0 Sigma Upper Band"))
+        b25 = mean + 2.5 * std
+        if b25 > cur + 0.05 * atr:
+            stop = mean + 3.8 * std
+            target = mean + 0.5 * std
+            candidates.append(CandidateEntry(_round_to_step(b25, price_step), stop=stop, target=target, tag="Bollinger +2.5 Sigma Extreme Overbought"))
+        b15 = mean + 1.5 * std
+        if b15 > cur + 0.05 * atr:
+            stop = mean + 2.5 * std
+            target = mean - 0.5 * std
+            candidates.append(CandidateEntry(_round_to_step(b15, price_step), stop=stop, target=target, tag="Bollinger +1.5 Sigma Dynamic Resistance"))
+
+    seen = set()
+    deduped = []
+    candidates.sort(key=lambda x: abs(float(x) - cur))
+    for c in candidates:
+        if float(c) not in seen and (c < cur if side == "buy" else c > cur):
+            seen.add(float(c))
+            deduped.append(c)
+    return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics)
 
 
 def _candidate_entries(side, metrics, bars=None, strategy="atr_swing"):
@@ -514,27 +610,69 @@ def _normalize_tpsl_config(mode, bars_data, point_size=None,
 def _build_candidate_plans(side, entries, metrics, interval_minutes, config):
     plans = []
     mode = config["mode"]
+    price_step = float(metrics.get("price_step", 0.01) or 0.01)
+
     if mode == "auto":
         for entry in entries:
+            has_native = (
+                hasattr(entry, "stop") and entry.stop is not None and
+                hasattr(entry, "target") and entry.target is not None
+            )
+            if has_native:
+                native_stop = _round_to_step(entry.stop, price_step)
+                native_target = _round_to_step(entry.target, price_step)
+                e_val = _round_to_step(float(entry), price_step)
+                risk = abs(e_val - native_stop)
+                reward = abs(native_target - e_val)
+                rr = reward / risk if risk > 0 else 2.0
+                tag = getattr(entry, "tag", "")
+
+                valid_plan = False
+                if side == "buy" and native_stop < e_val < native_target:
+                    valid_plan = True
+                elif side == "sell" and native_target < e_val < native_stop:
+                    valid_plan = True
+
+                if valid_plan:
+                    plans.append({
+                        "entry_price": e_val,
+                        "stop_loss": native_stop,
+                        "take_profit": native_target,
+                        "side": side,
+                        "risk_atr": float(risk / metrics["atr"]) if metrics.get("atr") else 1.0,
+                        "target_rr": float(rr),
+                        "interval_minutes": int(interval_minutes),
+                        "setup_tag": tag
+                    })
+                    continue
+
+            # Fallback to ATR / structure risk variations (Baseline behavior for atr_swing or fallback)
             for risk_atr in (0.80, 1.10):
                 for rr in (1.50, 2.0):
-                    plans.append(_build_plan(
-                        side, entry, metrics, risk_atr, rr, interval_minutes
-                    ))
+                    p = _build_plan(side, float(entry), metrics, risk_atr, rr, interval_minutes)
+                    p["setup_tag"] = getattr(entry, "tag", "ATR/Swing")
+                    plans.append(p)
+
     elif mode in ("fixed", "risk_reward"):
         for entry in entries:
-            plans.append(_build_point_plan(
-                side, entry, config["tp_points"], config["sl_points"],
+            p = _build_point_plan(
+                side, float(entry), config["tp_points"], config["sl_points"],
                 config["point_size"], interval_minutes
-            ))
+            )
+            p["setup_tag"] = getattr(entry, "tag", "")
+            plans.append(p)
+
     else:
         for entry in entries:
             for tp_points in config["tp_values"]:
                 for sl_points in config["sl_values"]:
-                    plans.append(_build_point_plan(
-                        side, entry, tp_points, sl_points,
+                    p = _build_point_plan(
+                        side, float(entry), tp_points, sl_points,
                         config["point_size"], interval_minutes
-                    ))
+                    )
+                    p["setup_tag"] = getattr(entry, "tag", "")
+                    plans.append(p)
+
     if len(plans) > MAX_CANDIDATES_PER_SIDE:
         raise ValueError(
             f"Candidate grid creates {len(plans)} plans per side; "
@@ -624,6 +762,7 @@ def _finalize_recommendation(side, selected, candidate_count, bars_data,
 
     result["plan"]["order_type"] = "LIMIT"
     result["plan"]["tpsl_mode"] = plan.get("tpsl_mode", "auto")
+    result["plan"]["setup_tag"] = plan.get("setup_tag", "")
     for key in ("tp_points", "sl_points", "point_size", "target_rr"):
         if key in plan:
             result["plan"][key] = plan[key]
