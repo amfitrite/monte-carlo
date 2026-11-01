@@ -122,3 +122,18 @@ The scan currently evaluates up to 20 candidates per side (5 entry areas × 2 AT
 **Limit-order touch proxy:** candidate ranking now weights simulated average R by the historical frequency with which the same ATR-normalized limit distance was touched within the selected horizon. The GUI shows this as **Touch**, plus the median bars-to-touch and touch sample metadata in the analyzer result. This is an OHLC touch-rate proxy, not actual broker fill probability: queue priority, bid/ask execution, liquidity, gaps, and partial fills are not modeled. TP/SL probabilities remain conditional on entry fill and are not calibrated live probabilities. A chronological walk-forward test with realistic execution costs is still required.
 
 Compare mode discovers candidates using Legacy V1 (the preserved baseline), then evaluates the same selected BUY and SELL plans with Enhanced V2. This isolates the engine comparison on the final plans; it does not establish out-of-sample predictive accuracy.
+
+
+## Dual Auto Analyzer TP/SL controls
+
+The GUI's Dual Auto Analyzer offers three TP/SL search modes:
+
+- **Auto Optimize (default):** preserves the ATR/structure-derived TP and SL candidate grid.
+- **Fixed TP/SL:** users specify fixed TP and SL distances in broker points; the analyzer continues searching entry prices independently for BUY LIMIT and SELL LIMIT.
+- **TP/SL Range:** users define minimum, maximum, and step for TP and SL points. The analyzer tests the Cartesian grid of TP/SL combinations for each candidate entry.
+
+**Point conversion:** one point is converted to price using point_size (the price value of one broker point). MT5 source data now includes symbol_info.point when available. For COMEX data or older cached MT5 files, verify or enter the correct point size manually; the UI's 0.01 starting value is only a convenience default, not a universal XAUUSD convention.
+
+The range grid is limited to 20 TP/SL combinations and 100 total candidates per direction to bound scan time. Invalid ranges, non-positive values, and non-integral point inputs are rejected. Existing ATR/structure behavior remains the default.
+
+Candidate ranking still uses touch-adjusted simulated average R. Historical OHLC touch frequency remains a proxy, not broker fill probability; simulated TP/SL outcomes are conditional on a filled limit entry.
