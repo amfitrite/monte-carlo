@@ -141,23 +141,36 @@ Candidate ranking still uses touch-adjusted simulated average R. Historical OHLC
 
 ---
 
-## 💡 Roadmap Ide & Eksplorasi Strategi Monte Carlo
+## 💡 Roadmap Ide & Eksplorasi Strategi Monte Carlo (Total 5 Strategi)
 
-Berikut adalah katalog kandidat strategi berbasis probabilitas stokastik Monte Carlo yang dievaluasi untuk pengembangan selanjutnya:
+> **Prinsip Utama:** Strategi versi asli (**ATR Pullback & Swing Structure**) dijamin **100% tetap dipertahankan sebagai baseline default (tidak dibuang/diubah)**. Keempat strategi baru akan ditambahkan berdampingan via dropdown **Strategy Selector** di GUI scanner sehingga pengguna bebas memilih atau membandingkan hasil uji odds Monte Carlo antar strategi.
 
-### 1. Breakout + Retest Point of Control (POC) / Volume Profile *(Prioritas Utama)*
+Berikut adalah daftar lengkap 5 strategi yang dirancang dalam arsitektur scanner:
+
+### 1. ATR Pullback & Swing Structure *(Default / Versi Asli - Tetap Dipertahankan)*
+- **Konsep:** Strategi baseline Jake Schincariol & Time Machine PRO. Menghitung level diskon/premium bertingkat ($0.25, 0.5, 0.75, 1.0 \times \text{ATR}$) serta level swing high/low 24 bar terakhir untuk menempatkan limit order BUY & SELL.
+- **Karakter:** Mean-reversion intraday stabil dengan batasan volatilitas dinamis.
+
+### 2. Breakout + Retest Point of Control (POC) / Volume Profile *(Strategi Baru #1)*
 - **Konsep:** Mendeteksi breakout struktur/range konsolidasi, menghitung distribusi Volume Profile (VPVR) menggunakan tick volume MT5, lalu menempatkan Limit Order tepat di level Point of Control (POC) atau Value Area (VAH/VAL) untuk menangkap retest.
 - **Keunggulan Monte Carlo:** Mengukur apakah harga memiliki tendensi retest jemput POC sebelum melanjutkan ekspansi, serta menguji ketahanan SL di luar zona konsolidasi.
 
-### 2. ICT / SMC: Liquidity Sweep + Fair Value Gap (FVG) Retest
+### 3. ICT / SMC: Liquidity Sweep + Fair Value Gap (FVG) Retest *(Strategi Baru #2)*
 - **Konsep:** Mendeteksi pembersihan likuiditas (false break/sweep swing high/low) yang diikuti pembentukan candle imbalance 3 bar (FVG). Memasang Limit Order di batas atau median (50% Consequent Encroachment) dari FVG.
 - **Keunggulan Monte Carlo:** Mensimulasikan kekuatan tarikan area imbalance dalam menjemput order dan mengeksekusi probabilitas TP vs SL.
 
-### 3. Session Open Range Breakout (ORB) / Sesi Asia – London – NY
+### 4. Session Open Range Breakout (ORB) / Sesi Asia – London – NY *(Strategi Baru #3)*
 - **Konsep:** Mengambil High/Low 30–60 menit pertama pembukaan sesi utama (London/NY Open), kemudian menguji entri retest pada batas breakout tersebut (Breakout-Pullback Limit).
 - **Keunggulan Monte Carlo:** Memanfaatkan anomali lonjakan volatilitas jam buka pasar (*time-of-day seasonality*) untuk mengukur reliabilitas kelanjutan tren sesi.
 
-### 4. Mean Reversion & Stat-Arb: Bollinger Bands Extremes + Z-Score
+### 5. Mean Reversion & Stat-Arb: Bollinger Bands Extremes + Z-Score *(Strategi Baru #4)*
 - **Konsep:** Menghitung Z-score atau deviasi harga terhadap rata-rata bergerak ($\pm 2.5$ atau $3.0$ standard deviation). Memasang Limit Order saat pasar mengalami overbought/oversold ekstrem dengan target TP kembali ke mean (garis tengah).
 - **Keunggulan Monte Carlo:** Sangat akurat dalam menguji seberapa sering ekor distribusi (*tail risk*) mengalami pembalikan kembali ke nilai rata-rata historis.
+
+---
+
+### Arsitektur Modul Terpadu:
+- Tiap strategi diimplementasikan sebagai generator kandidat independen (`_candidate_entries_atr_swing`, `_candidate_entries_poc`, `_candidate_entries_fvg`, dll.).
+- Seluruh kandidat dievaluasi oleh mesin inti Monte Carlo yang sama sehingga hasil scoring, touch probability, dan expected R dapat dibandingkan secara objektif (*apple-to-apple*).
+
 
