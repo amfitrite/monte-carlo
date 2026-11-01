@@ -13,6 +13,9 @@ import numpy as np
 import timemachine
 import engine_v2
 
+MAX_TPSL_COMBINATIONS = 20
+MAX_CANDIDATES_PER_SIDE = 100
+
 
 def _valid_bars(bars):
     clean = []
@@ -67,12 +70,13 @@ def _candidate_entries(side, metrics):
         raw = [cur + atr * x for x in (0.25, 0.40, 0.60, 0.80, 1.0)]
         raw += [hi - span * x for x in (0.15, 0.25, 0.35)]
         valid = [x for x in raw if cur + 0.10 * atr <= x <= cur + 2.0 * atr]
-    # Round to cents, de-duplicate and keep candidates ordered nearest to market first.
-    valid = sorted(set(round(float(x), 2) for x in valid),
+    # Snap levels to the configured price-point size when known.
+    price_step = float(metrics.get("price_step", 0.01) or 0.01)
+    valid = sorted(set(_round_to_step(float(x), price_step) for x in valid),
                    key=lambda x: abs(x - cur))
     if not valid:
-        valid = [round(cur - 0.5 * atr, 2) if side == "buy"
-                 else round(cur + 0.5 * atr, 2)]
+        fallback = cur - 0.5 * atr if side == "buy" else cur + 0.5 * atr
+        valid = [_round_to_step(fallback, price_step)]
     return valid[:5]
 
 
@@ -157,6 +161,143 @@ def _build_plan(side, entry, metrics, risk_atr, rr, interval_minutes):
     }
 
 
+def _price_precision(step):
+    text = format(float(step), ".12f").rstrip("0").rstrip(".")
+    return len(text.split(".", 1)[1]) if "." in text else 0
+
+
+def _round_to_step(price, step):
+    step = float(step)
+    if not np.isfinite(step) or step <= 0:
+        raise ValueError("point_size must be a finite positive number.")
+    return round(round(float(price) / step) * step, _price_precision(step))
+
+
+def _build_point_plan(side, entry, tp_points, sl_points, point_size, interval_minutes):
+    """Build a fixed-distance plan; points are converted using price per point."""
+    tp_points, sl_points = int(tp_points), int(sl_points)
+    point_size = float(point_size)
+    if tp_points <= 0 or sl_points <= 0 or point_size <= 0:
+        raise ValueError("TP points, SL points, and point_size must all be positive.")
+    entry = _round_to_step(entry, point_size)
+    tp_distance, sl_distance = tp_points * point_size, sl_points * point_size
+    if side == "buy":
+        stop, target = entry - sl_distance, entry + tp_distance
+    elif side == "sell":
+        stop, target = entry + sl_distance, entry - tp_distance
+    else:
+        raise ValueError("side must be 'buy' or 'sell'.")
+    return {
+        "entry_price": entry,
+        "stop_loss": _round_to_step(stop, point_size),
+        "take_profit": _round_to_step(target, point_size),
+        "side": side,
+        "target_rr": float(tp_points) / float(sl_points),
+        "tp_points": tp_points,
+        "sl_points": sl_points,
+        "point_size": point_size,
+        "interval_minutes": int(interval_minutes)
+    }
+
+
+def _positive_integer(value, name):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a positive whole number.")
+    if not np.isfinite(number) or number <= 0 or not number.is_integer():
+        raise ValueError(f"{name} must be a positive whole number.")
+    return int(number)
+
+
+def _normalize_tpsl_config(mode, bars_data, point_size=None,
+                           fixed_tp_points=2000, fixed_sl_points=1000,
+                           tp_min_points=1000, tp_max_points=5000, tp_step_points=500,
+                           sl_min_points=500, sl_max_points=2000, sl_step_points=250):
+    mode = str(mode or "auto").strip().lower()
+    if mode not in ("auto", "fixed", "range"):
+        raise ValueError("tpsl_mode must be 'auto', 'fixed', or 'range'.")
+    if mode == "auto":
+        return {"mode": "auto"}
+
+    if point_size in (None, ""):
+        point_size = (bars_data or {}).get("point_size")
+    try:
+        point_size = float(point_size)
+    except (TypeError, ValueError):
+        raise ValueError(
+            "A valid point_size is required for Fixed TP/SL and TP/SL Range. "
+            "Set it to the broker's price value for one point."
+        )
+    if not np.isfinite(point_size) or point_size <= 0:
+        raise ValueError("point_size must be a finite positive price value.")
+
+    if mode == "fixed":
+        return {
+            "mode": "fixed",
+            "point_size": point_size,
+            "tp_points": _positive_integer(fixed_tp_points, "fixed_tp_points"),
+            "sl_points": _positive_integer(fixed_sl_points, "fixed_sl_points")
+        }
+
+    tp_min = _positive_integer(tp_min_points, "tp_min_points")
+    tp_max = _positive_integer(tp_max_points, "tp_max_points")
+    tp_step = _positive_integer(tp_step_points, "tp_step_points")
+    sl_min = _positive_integer(sl_min_points, "sl_min_points")
+    sl_max = _positive_integer(sl_max_points, "sl_max_points")
+    sl_step = _positive_integer(sl_step_points, "sl_step_points")
+    if tp_min > tp_max or sl_min > sl_max:
+        raise ValueError("Range minimum must be less than or equal to its maximum.")
+    tp_values = list(range(tp_min, tp_max + 1, tp_step))
+    sl_values = list(range(sl_min, sl_max + 1, sl_step))
+    combinations = len(tp_values) * len(sl_values)
+    if combinations > MAX_TPSL_COMBINATIONS:
+        raise ValueError(
+            f"TP/SL Range creates {combinations} combinations; maximum is "
+            f"{MAX_TPSL_COMBINATIONS}. Increase the steps or narrow the ranges."
+        )
+    return {
+        "mode": "range",
+        "point_size": point_size,
+        "tp_values": tp_values,
+        "sl_values": sl_values
+    }
+
+
+def _build_candidate_plans(side, entries, metrics, interval_minutes, config):
+    plans = []
+    mode = config["mode"]
+    if mode == "auto":
+        for entry in entries:
+            for risk_atr in (0.80, 1.10):
+                for rr in (1.50, 2.0):
+                    plans.append(_build_plan(
+                        side, entry, metrics, risk_atr, rr, interval_minutes
+                    ))
+    elif mode == "fixed":
+        for entry in entries:
+            plans.append(_build_point_plan(
+                side, entry, config["tp_points"], config["sl_points"],
+                config["point_size"], interval_minutes
+            ))
+    else:
+        for entry in entries:
+            for tp_points in config["tp_values"]:
+                for sl_points in config["sl_values"]:
+                    plans.append(_build_point_plan(
+                        side, entry, tp_points, sl_points,
+                        config["point_size"], interval_minutes
+                    ))
+    if len(plans) > MAX_CANDIDATES_PER_SIDE:
+        raise ValueError(
+            f"Candidate grid creates {len(plans)} plans per side; "
+            f"maximum is {MAX_CANDIDATES_PER_SIDE}."
+        )
+    for plan in plans:
+        plan["tpsl_mode"] = mode
+    return plans
+
+
 def _run_one(plan, bars_data, horizon_bars, replays, spread, seed,
              projection_mode, tie_break, seasonality, engine_mode):
     common = dict(
@@ -184,31 +325,26 @@ def _rank_score(result, touch_stats):
 
 
 def _scan_side(side, metrics, bars_data, horizon_bars, search_replays, spread,
-               seed, projection_mode, tie_break, seasonality, engine_mode):
+               seed, projection_mode, tie_break, seasonality, engine_mode,
+               tpsl_config):
     interval = int(bars_data.get("interval_minutes", 5) or 5)
     entries = _candidate_entries(side, metrics)
-    risk_multipliers = (0.80, 1.10)
-    rr_values = (1.50, 2.0)
+    plans = _build_candidate_plans(side, entries, metrics, interval, tpsl_config)
     candidates = []
-    index = 0
-    for entry in entries:
-        for risk_atr in risk_multipliers:
-            for rr in rr_values:
-                plan = _build_plan(side, entry, metrics, risk_atr, rr, interval)
-                result = _run_one(
-                    plan, bars_data, horizon_bars, search_replays, spread,
-                    seed + index, projection_mode, tie_break, seasonality, engine_mode
-                )
-                distance_atr = abs(metrics["current_price"] - entry) / metrics["atr"]
-                touch = _estimate_entry_touch(
-                    bars_data["bars"], side, distance_atr, horizon_bars
-                )
-                candidates.append((_rank_score(result, touch), plan, result, touch))
-                index += 1
+    for index, plan in enumerate(plans):
+        result = _run_one(
+            plan, bars_data, horizon_bars, search_replays, spread,
+            seed + index, projection_mode, tie_break, seasonality, engine_mode
+        )
+        distance_atr = abs(metrics["current_price"] - plan["entry_price"]) / metrics["atr"]
+        touch = _estimate_entry_touch(bars_data["bars"], side, distance_atr, horizon_bars)
+        candidates.append((_rank_score(result, touch), plan, result, touch))
     candidates.sort(key=lambda x: x[0], reverse=True)
     if not candidates:
         raise ValueError(f"No valid {side.upper()} LIMIT candidates could be generated.")
     return candidates[0], len(candidates)
+
+
 
 
 def _finalize_recommendation(side, selected, candidate_count, bars_data,
@@ -240,6 +376,10 @@ def _finalize_recommendation(side, selected, candidate_count, bars_data,
     adjusted_r = float(result["odds"]["avg_r"]) * touch_rate
 
     result["plan"]["order_type"] = "LIMIT"
+    result["plan"]["tpsl_mode"] = plan.get("tpsl_mode", "auto")
+    for key in ("tp_points", "sl_points", "point_size", "target_rr"):
+        if key in plan:
+            result["plan"][key] = plan[key]
     result["plan"]["candidate_count_scanned"] = candidate_count
     result["plan"]["candidate_search_replays"] = int(coarse["plan"]["replays"])
     result["plan"]["entry_fill_probability"] = None
@@ -269,14 +409,17 @@ def _finalize_recommendation(side, selected, candidate_count, bars_data,
 def find_dual_recommendations(
     bars_data, horizon_bars=48, replays=5000, spread=0.24, seed=19,
     projection_mode="free_drift", tie_break="smart", seasonality=False,
-    engine_mode="legacy"
+    engine_mode="legacy", tpsl_mode="auto", point_size=None,
+    fixed_tp_points=2000, fixed_sl_points=1000,
+    tp_min_points=1000, tp_max_points=5000, tp_step_points=500,
+    sl_min_points=500, sl_max_points=2000, sl_step_points=250
 ):
     """
-    Search and rank multiple BUY LIMIT and SELL LIMIT candidates.
+    Search and rank BUY LIMIT and SELL LIMIT candidates.
 
-    The candidate scan uses a lower replay count for speed, then re-runs each
-    selected side's best candidate at the requested replay count. Compare mode
-    selects candidates using Legacy V1 and evaluates the same final plans with V2.
+    auto derives TP/SL from ATR and structure; fixed holds user distances constant;
+    range searches a bounded grid of TP/SL point distances. point_size is the
+    price value of one broker point and may differ by broker/symbol.
     """
     if engine_mode not in ("legacy", "v2", "compare"):
         raise ValueError("engine_mode must be 'legacy', 'v2', or 'compare'.")
@@ -288,9 +431,18 @@ def find_dual_recommendations(
     if "interval_minutes" not in normalized:
         delta = bars[-1]["timestamp"] - bars[-2]["timestamp"]
         normalized["interval_minutes"] = 1 if delta <= 120 else max(1, int(round(delta / 60)))
+    if point_size is None:
+        point_size = normalized.get("point_size")
+    tpsl_config = _normalize_tpsl_config(
+        tpsl_mode, normalized, point_size,
+        fixed_tp_points, fixed_sl_points,
+        tp_min_points, tp_max_points, tp_step_points,
+        sl_min_points, sl_max_points, sl_step_points
+    )
     metrics = calculate_market_metrics(bars, period=min(len(bars), max(48, horizon_bars)))
     interval = int(normalized.get("interval_minutes", 5) or 5)
     metrics["interval_minutes"] = interval
+    metrics["price_step"] = float(tpsl_config.get("point_size", point_size or 0.01))
 
     horizon_bars = max(1, int(horizon_bars))
     replays = max(100, int(replays))
@@ -299,11 +451,11 @@ def find_dual_recommendations(
 
     buy_selected, buy_count = _scan_side(
         "buy", metrics, normalized, horizon_bars, search_replays, spread, seed,
-        projection_mode, tie_break, seasonality, primary_mode
+        projection_mode, tie_break, seasonality, primary_mode, tpsl_config
     )
     sell_selected, sell_count = _scan_side(
         "sell", metrics, normalized, horizon_bars, search_replays, spread, seed + 1000,
-        projection_mode, tie_break, seasonality, primary_mode
+        projection_mode, tie_break, seasonality, primary_mode, tpsl_config
     )
     buy_res = _finalize_recommendation(
         "buy", buy_selected, buy_count, normalized, metrics, horizon_bars,
@@ -345,23 +497,38 @@ def find_dual_recommendations(
         " Touch rate berasal dari frekuensi sentuhan level pada OHLC historis; "
         "bukan jaminan order terisi atau probabilitas fill broker."
     )
+    if tpsl_config["mode"] == "auto":
+        tpsl_label = "Auto ATR/structure"
+    elif tpsl_config["mode"] == "fixed":
+        tpsl_label = f"Fixed TP {tpsl_config['tp_points']} / SL {tpsl_config['sl_points']} points"
+    else:
+        tpsl_label = (
+            f"TP range {tpsl_config['tp_values'][0]}-{tpsl_config['tp_values'][-1]}; "
+            f"SL range {tpsl_config['sl_values'][0]}-{tpsl_config['sl_values'][-1]} points"
+        )
     return {
         "metrics": metrics,
         "best_direction": best_dir,
         "summary": summary,
         "engine_mode": engine_mode,
+        "tpsl_config": {
+            "mode": tpsl_config["mode"],
+            "label": tpsl_label,
+            "point_size": tpsl_config.get("point_size")
+        },
         "search": {
             "method": "ATR pullback + recent swing-structure candidate grid",
             "buy_candidates_scanned": buy_count,
             "sell_candidates_scanned": sell_count,
             "search_replays_per_candidate": search_replays,
             "final_replays": replays,
-            "ranking": "simulated average R; target probability and RR are secondary descriptors",
+            "ranking": "touch-adjusted simulated average R; target probability and RR are secondary descriptors",
             "fill_model": "historical_ohlc_touch_proxy_not_broker_fill_probability"
         },
         "buy": buy_res,
         "sell": sell_res
     }
+
 
 
 if __name__ == "__main__":
