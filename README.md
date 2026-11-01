@@ -126,14 +126,38 @@ Compare mode discovers candidates using Legacy V1 (the preserved baseline), then
 
 ## Dual Auto Analyzer TP/SL controls
 
-The GUI's Dual Auto Analyzer offers three TP/SL search modes:
+The GUI's Dual Auto Analyzer offers four TP/SL search modes:
 
 - **Auto Optimize (default):** preserves the ATR/structure-derived TP and SL candidate grid.
 - **Fixed TP/SL:** users specify fixed TP and SL distances in broker points; the analyzer continues searching entry prices independently for BUY LIMIT and SELL LIMIT.
 - **TP/SL Range:** users define minimum, maximum, and step for TP and SL points. The analyzer tests the Cartesian grid of TP/SL combinations for each candidate entry.
+- **Risk Reward:** users select or specify a target Risk:Reward ratio (e.g. 1:1.5, 1:2.0, 1:3.0, 1:5.0, 1:10.0) and custom Stop Loss points; the engine locks the exact ratio and discovers the highest-expectancy BUY LIMIT and SELL LIMIT entries.
 
 **Point conversion:** one point is converted to price using point_size (the price value of one broker point). MT5 source data now includes symbol_info.point when available. For COMEX data or older cached MT5 files, verify or enter the correct point size manually; the UI's 0.01 starting value is only a convenience default, not a universal XAUUSD convention.
 
 The range grid is limited to 20 TP/SL combinations and 100 total candidates per direction to bound scan time. Invalid ranges, non-positive values, and non-integral point inputs are rejected. Existing ATR/structure behavior remains the default.
 
 Candidate ranking still uses touch-adjusted simulated average R. Historical OHLC touch frequency remains a proxy, not broker fill probability; simulated TP/SL outcomes are conditional on a filled limit entry.
+
+---
+
+## 💡 Roadmap Ide & Eksplorasi Strategi Monte Carlo
+
+Berikut adalah katalog kandidat strategi berbasis probabilitas stokastik Monte Carlo yang dievaluasi untuk pengembangan selanjutnya:
+
+### 1. Breakout + Retest Point of Control (POC) / Volume Profile *(Prioritas Utama)*
+- **Konsep:** Mendeteksi breakout struktur/range konsolidasi, menghitung distribusi Volume Profile (VPVR) menggunakan tick volume MT5, lalu menempatkan Limit Order tepat di level Point of Control (POC) atau Value Area (VAH/VAL) untuk menangkap retest.
+- **Keunggulan Monte Carlo:** Mengukur apakah harga memiliki tendensi retest jemput POC sebelum melanjutkan ekspansi, serta menguji ketahanan SL di luar zona konsolidasi.
+
+### 2. ICT / SMC: Liquidity Sweep + Fair Value Gap (FVG) Retest
+- **Konsep:** Mendeteksi pembersihan likuiditas (false break/sweep swing high/low) yang diikuti pembentukan candle imbalance 3 bar (FVG). Memasang Limit Order di batas atau median (50% Consequent Encroachment) dari FVG.
+- **Keunggulan Monte Carlo:** Mensimulasikan kekuatan tarikan area imbalance dalam menjemput order dan mengeksekusi probabilitas TP vs SL.
+
+### 3. Session Open Range Breakout (ORB) / Sesi Asia – London – NY
+- **Konsep:** Mengambil High/Low 30–60 menit pertama pembukaan sesi utama (London/NY Open), kemudian menguji entri retest pada batas breakout tersebut (Breakout-Pullback Limit).
+- **Keunggulan Monte Carlo:** Memanfaatkan anomali lonjakan volatilitas jam buka pasar (*time-of-day seasonality*) untuk mengukur reliabilitas kelanjutan tren sesi.
+
+### 4. Mean Reversion & Stat-Arb: Bollinger Bands Extremes + Z-Score
+- **Konsep:** Menghitung Z-score atau deviasi harga terhadap rata-rata bergerak ($\pm 2.5$ atau $3.0$ standard deviation). Memasang Limit Order saat pasar mengalami overbought/oversold ekstrem dengan target TP kembali ke mean (garis tengah).
+- **Keunggulan Monte Carlo:** Sangat akurat dalam menguji seberapa sering ekor distribusi (*tail risk*) mengalami pembalikan kembali ke nilai rata-rata historis.
+
