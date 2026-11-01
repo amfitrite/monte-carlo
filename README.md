@@ -134,13 +134,16 @@ Dual Auto Analyzer is the inverse workflow to Manual Monte Carlo:
 ### 🎛️ Dynamic Candidate Grid (Parameter Sweep Fine-Tuning)
 Untuk menemukan titik entri paling optimal di XAUUSD, Dual Auto Analyzer kini dilengkapi fitur **Candidate Grid**:
 - **0 (Versi Asli / Baseline - Default):** Menjalankan jalur kode 100% baseline orisinal tanpa variasi tambahan (menjaga kompatibilitas dan identitas penuh versi lama).
-- **5 Variasi (Cepat):** Menghasilkan 5 variasi level entri adaptif di seputar zona strategi.
-- **10 Variasi (Seimbang):** Menghasilkan 10 variasi level entri bertingkat.
-- **20 Variasi (Optimal Parameter Sweep):** Menghasilkan hingga 20 variasi mesh level entri presisi tinggi untuk fine-tuning maksimal.
+- **5 Variasi (Cepat):** Menghasilkan hingga 5 variasi level entri adaptif di seputar zona strategi setelah filter & deduplikasi.
+- **10 Variasi (Seimbang):** Menghasilkan hingga 10 variasi level entri bertingkat.
+- **20 Variasi (Optimal Brute-Force):** Menghasilkan hingga 20 variasi mesh level entri presisi tinggi untuk fine-tuning maksimal.
+
+*(Catatan: Jumlah entri yang dievaluasi merupakan batas atas unik yang lolos validasi spread broker & filter struktur pasar).*
 
 Fitur ini bersinergi secara mulus dengan:
 - **Pilihan Replays Cepat:** Mendukung pilihan `100`, `250`, `500`, `1,000`, `3,000`, `5,000`, dan `10,000` replays. Pengujian 20 variasi kombinasi entri dengan 100 replays dapat selesai dalam hitungan detik.
 - **Mode Risk:Reward Terkunci:** Misalnya dengan target RR 1:5.0, setiap variasi entri yang dihasilkan grid tetap mengunci rasio 1:5.0 secara ketat, sementara Monte Carlo mencari level entri yang memiliki touch-adjusted simulated expectancy tertinggi.
+- **Mode TP/SL Range Adaptif:** Kuota entri dibatasi secara dinamis ketika dikombinasikan dengan grid TP/SL Range agar total candidate plan tidak melebihi batas 200 plan per arah.
 
 The scan evaluates candidate plans, using a capped replay count for coarse candidate ranking, then re-runs the selected winning BUY and SELL candidates at the requested full replay count. Ranking is based primarily on simulated average R (expectancy); TP-first probability and RR are displayed as supporting statistics.
 
@@ -162,7 +165,7 @@ The GUI's Dual Auto Analyzer offers four TP/SL search modes:
 
 **Point conversion:** one point is converted to price using point_size (the price value of one broker point). MT5 source data now includes symbol_info.point when available. For COMEX data or older cached MT5 files, verify or enter the correct point size manually; the UI's 0.01 starting value is only a convenience default, not a universal XAUUSD convention.
 
-The range grid is limited to 20 TP/SL combinations and 100 total candidates per direction to bound scan time. Invalid ranges, non-positive values, and non-integral point inputs are rejected. Existing ATR/structure behavior remains the default.
+The range grid is limited to 20 TP/SL combinations and 200 total candidate plans per direction to bound scan time. Invalid ranges, non-positive values, and non-integral point inputs are rejected. Existing ATR/structure behavior remains the default.
 
 Candidate ranking still uses touch-adjusted simulated average R. Historical OHLC touch frequency remains a proxy, not broker fill probability; simulated TP/SL outcomes are conditional on a filled limit entry.
 

@@ -1486,6 +1486,12 @@ def _build_candidate_plans(side, entries, metrics, interval_minutes, config):
             plans.append(p)
 
     else:
+        # Range mode: dynamically bound entries to ensure total plans <= MAX_CANDIDATES_PER_SIDE
+        combinations = len(config.get("tp_values", [])) * len(config.get("sl_values", []))
+        if combinations > 0 and len(entries) * combinations > MAX_CANDIDATES_PER_SIDE:
+            max_entries = max(1, MAX_CANDIDATES_PER_SIDE // combinations)
+            entries = entries[:max_entries]
+
         for entry in entries:
             for tp_points in config["tp_values"]:
                 for sl_points in config["sl_values"]:

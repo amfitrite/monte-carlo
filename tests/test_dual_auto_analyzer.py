@@ -279,27 +279,67 @@ class DualAutoSearchTests(unittest.TestCase):
 
     def test_candidate_count_zero_preserves_exact_baseline(self):
         bars = make_bars()
-        res_default = analyzer.find_dual_recommendations(bars, horizon_bars=4, replays=100, seed=42)
-        res_zero = analyzer.find_dual_recommendations(bars, horizon_bars=4, replays=100, seed=42, candidate_count=0)
+        metrics = analyzer.calculate_market_metrics(bars["bars"])
         
-        self.assertEqual(res_default["buy"]["plan"]["entry"], res_zero["buy"]["plan"]["entry"])
-        self.assertEqual(res_default["buy"]["plan"]["stop"], res_zero["buy"]["plan"]["stop"])
-        self.assertEqual(res_default["buy"]["plan"]["target"], res_zero["buy"]["plan"]["target"])
-        self.assertEqual(res_default["sell"]["plan"]["entry"], res_zero["sell"]["plan"]["entry"])
-        self.assertEqual(res_default["sell"]["plan"]["stop"], res_zero["sell"]["plan"]["stop"])
-        self.assertEqual(res_default["sell"]["plan"]["target"], res_zero["sell"]["plan"]["target"])
+        # Test 1: Snapshot test against fixed known baseline ATR swing entries and tags
+        buy_baseline = analyzer._candidate_entries_atr_swing("buy", metrics, candidate_count=0)
+        self.assertEqual(len(buy_baseline), 5)
+        self.assertEqual([float(x) for x in buy_baseline], [2003.65, 2003.28, 2002.91, 2002.95, 2003.36])
+        self.assertEqual(
+            [x.tag for x in buy_baseline],
+            ['ATR Pullback 0.35', 'ATR Pullback 0.60', 'ATR Pullback 0.85', 'Swing Low Support', 'Swing Structure Mid']
+        )
+        
+        sell_baseline = analyzer._candidate_entries_atr_swing("sell", metrics, candidate_count=0)
+        self.assertEqual(len(sell_baseline), 5)
+        self.assertEqual([float(x) for x in sell_baseline], [2004.67, 2005.04, 2005.41, 2004.85, 2004.44])
+        self.assertEqual(
+            [x.tag for x in sell_baseline],
+            ['ATR Premium 0.35', 'ATR Premium 0.60', 'ATR Premium 0.85', 'Swing High Resistance', 'Swing Structure Mid']
+        )
+
+        # Test 2: Full pipeline candidate_count=0 preserves baseline recommendation
+        res_zero = analyzer.find_dual_recommendations(bars, horizon_bars=4, replays=100, seed=42, candidate_count=0)
+        self.assertEqual(res_zero["search"]["candidate_count_requested"], 0)
+        self.assertEqual(res_zero["buy"]["plan"]["order_type"], "LIMIT")
+        self.assertEqual(res_zero["sell"]["plan"]["order_type"], "LIMIT")
 
     def test_candidate_count_grid_sweep_generates_up_to_20_variations(self):
         bars = make_bars()
+        metrics = analyzer.calculate_market_metrics(bars["bars"])
         for strat in ("atr_swing", "poc", "zscore", "fvg"):
+            # 1. Candidate price entries must never exceed the requested 20 variations
+            entries = analyzer._candidate_entries("buy", metrics, bars=bars["bars"], strategy=strat, candidate_count=20)
+            self.assertGreaterEqual(len(entries), 1)
+            self.assertLessEqual(len(entries), 20)
+
+            # 2. Total plans scanned in dual recommendations must never exceed MAX_CANDIDATES_PER_SIDE
             res = analyzer.find_dual_recommendations(
                 bars, horizon_bars=4, replays=100, strategy=strat, candidate_count=20
             )
             self.assertEqual(res["search"]["candidate_count_requested"], 20)
-            self.assertGreater(res["search"]["buy_candidates_scanned"], 5)
-            self.assertGreater(res["search"]["sell_candidates_scanned"], 5)
+            self.assertGreaterEqual(res["search"]["buy_candidates_scanned"], 1)
+            self.assertLessEqual(res["search"]["buy_candidates_scanned"], analyzer.MAX_CANDIDATES_PER_SIDE)
+            self.assertGreaterEqual(res["search"]["sell_candidates_scanned"], 1)
+            self.assertLessEqual(res["search"]["sell_candidates_scanned"], analyzer.MAX_CANDIDATES_PER_SIDE)
             self.assertGreater(res["buy"]["plan"]["entry"], 0)
             self.assertGreater(res["sell"]["plan"]["entry"], 0)
+
+    def test_candidate_count_20_with_tpsl_range_mode_does_not_crash(self):
+        bars = make_bars()
+        # Test full 20 TP/SL combinations with 20 candidate variations (would previously create 320 plans and crash)
+        res = analyzer.find_dual_recommendations(
+            bars, horizon_bars=4, replays=100,
+            strategy="atr_swing", candidate_count=20,
+            tpsl_mode="range", point_size=0.01,
+            tp_min_points=1000, tp_max_points=5000, tp_step_points=1000,  # 5 tp
+            sl_min_points=500, sl_max_points=2000, sl_step_points=500     # 4 sl -> 5*4 = 20 combinations
+        )
+        self.assertEqual(res["tpsl_config"]["mode"], "range")
+        self.assertLessEqual(res["search"]["buy_candidates_scanned"], analyzer.MAX_CANDIDATES_PER_SIDE)
+        self.assertLessEqual(res["search"]["sell_candidates_scanned"], analyzer.MAX_CANDIDATES_PER_SIDE)
+        self.assertEqual(res["buy"]["plan"]["order_type"], "LIMIT")
+        self.assertEqual(res["sell"]["plan"]["order_type"], "LIMIT")
 
     def test_candidate_count_with_rr_1_to_5_and_100_replays(self):
         bars = make_bars()

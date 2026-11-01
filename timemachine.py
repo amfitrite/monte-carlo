@@ -236,8 +236,12 @@ def run_simulation(
     pools, interval_minutes, time_slots_per_day, total_slots = build_slot_pool(bars, window=window, seasonality=seasonality)
     
     if entry_slot is None:
-        now_dt = datetime.datetime.now(datetime.timezone.utc)
-        time_slot = (now_dt.hour * 60 + now_dt.minute) if interval_minutes == 1 else (now_dt.hour * 60 + now_dt.minute) // 5
+        if bars and "timestamp" in bars[-1]:
+            last_ts = float(bars[-1]["timestamp"])
+            now_dt = datetime.datetime.fromtimestamp(last_ts, tz=datetime.timezone.utc)
+        else:
+            now_dt = datetime.datetime.now(datetime.timezone.utc)
+        time_slot = (now_dt.hour * 60 + now_dt.minute) if interval_minutes == 1 else (now_dt.hour * 60 + now_dt.minute) // max(1, interval_minutes)
         time_slot = time_slot % time_slots_per_day
         if seasonality:
             entry_slot = now_dt.weekday() * time_slots_per_day + time_slot
