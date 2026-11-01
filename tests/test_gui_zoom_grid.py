@@ -187,6 +187,37 @@ class GuiZoomAndGridTests(unittest.TestCase):
 
                 app.candidate_grid_var.set("20 Variasi (Optimal Brute-Force)")
                 self.assertEqual(int(app.candidate_grid_var.get().split()[0]), 20)
+
+                # Verify dynamic quota and effective entries in GUI summary description
+                res_quota = dict(self.dual_res)
+                res_quota["search"] = {
+                    "strategy": "ATR Pullback & Swing Structure",
+                    "candidate_count_requested": 20,
+                    "effective_entries_per_side": 10,
+                    "entries_scanned": 10,
+                    "entry_quota_adjusted": True,
+                    "buy_candidates_scanned": 200,
+                    "sell_candidates_scanned": 200,
+                }
+                app._apply_dual_results(res_quota)
+                desc = app.dual_summary_desc.cget("text")
+                self.assertIn("10/20 entri", desc)
+                self.assertIn("kuota dinamis", desc)
+
+                # Verify baseline candidate_count=0 summary displays cleanly
+                res_baseline = dict(self.dual_res)
+                res_baseline["search"] = {
+                    "strategy": "ATR Pullback & Swing Structure",
+                    "candidate_count_requested": 0,
+                    "effective_entries_per_side": 5,
+                    "entries_scanned": 5,
+                    "entry_quota_adjusted": False,
+                    "buy_candidates_scanned": 5,
+                    "sell_candidates_scanned": 5,
+                }
+                app._apply_dual_results(res_baseline)
+                desc_base = app.dual_summary_desc.cget("text")
+                self.assertNotIn("Grid:", desc_base)
         finally:
             top.destroy()
 

@@ -1215,8 +1215,23 @@ class TimeMachineProGUI:
         # Update Summary Banner
         col = GREEN if best_dir == "BUY" else (RED if best_dir == "SELL" else GOLD)
         strat_lbl = res.get("strategy_label", "ATR & Swing")
+
+        search_info = res.get("search", {})
+        cand_req = search_info.get("candidate_count_requested", 0)
+        eff_entries = search_info.get("effective_entries_per_side", search_info.get("entries_scanned", cand_req))
+        buy_cand = search_info.get("buy_candidates_scanned", 0)
+        sell_cand = search_info.get("sell_candidates_scanned", 0)
+        quota_adj = search_info.get("entry_quota_adjusted", False)
+
+        grid_note = ""
+        if cand_req > 0:
+            if quota_adj or (eff_entries < cand_req):
+                grid_note = f" • Grid: {eff_entries}/{cand_req} entri ({buy_cand}+{sell_cand} plan, kuota dinamis)"
+            else:
+                grid_note = f" • Grid: {eff_entries} entri ({buy_cand}+{sell_cand} plan)"
+
         self.dual_summary_title.configure(text=f"⭐ BEST QUANT EDGE: {best_dir} SETUP", fg=col)
-        self.dual_summary_desc.configure(text=f"[{strat_lbl}] {summary}")
+        self.dual_summary_desc.configure(text=f"[{strat_lbl}{grid_note}] {summary}")
 
         # Update Headers
         bo = res["buy"]["odds"]

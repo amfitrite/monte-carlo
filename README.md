@@ -141,9 +141,11 @@ Untuk menemukan titik entri paling optimal di XAUUSD, Dual Auto Analyzer kini di
 *(Catatan: Jumlah entri yang dievaluasi merupakan batas atas unik yang lolos validasi spread broker & filter struktur pasar).*
 
 Fitur ini bersinergi secara mulus dengan:
-- **Pilihan Replays Cepat:** Mendukung pilihan `100`, `250`, `500`, `1,000`, `3,000`, `5,000`, dan `10,000` replays. Pengujian 20 variasi kombinasi entri dengan 100 replays dapat selesai dalam hitungan detik.
+- **Pilihan Replays Cepat & Kalibrasi Performa:** Mendukung pilihan `100`, `250`, `500`, `1,000`, `3,000`, `5,000`, dan `10,000` replays:
+  - Pada mode **Auto Optimize**, **Fixed TP/SL**, dan **Risk:Reward**: Evaluasi 20 variasi entri (~80 rencana per sisi) pada 100 replays selesai cepat dalam kisaran **~10–13 detik**.
+  - Pada mode **TP/SL Range**: Evaluasi kombinasi penuh 20 TP×SL × kuota 10 entri efektif (200 rencana per sisi / 400 rencana total) selesai dalam kisaran **~35–45 detik** (mendekati 1 menit).
 - **Mode Risk:Reward Terkunci:** Misalnya dengan target RR 1:5.0, setiap variasi entri yang dihasilkan grid tetap mengunci rasio 1:5.0 secara ketat, sementara Monte Carlo mencari level entri yang memiliki touch-adjusted simulated expectancy tertinggi.
-- **Mode TP/SL Range Adaptif:** Kuota entri dibatasi secara dinamis ketika dikombinasikan dengan grid TP/SL Range agar total candidate plan tidak melebihi batas 200 plan per arah.
+- **Mode TP/SL Range Adaptif & Transparansi Entri:** Kuota entri dibatasi secara dinamis (`effective_entries_per_side`) ketika dikombinasikan dengan grid TP/SL Range agar total candidate plan tidak melebihi batas 200 plan per arah. Jumlah entri efektif dilaporkan secara transparan pada metadata `search` dan banner ringkasan GUI (contoh: `10/20 entri (200+200 plan, kuota dinamis)`).
 
 The scan evaluates candidate plans, using a capped replay count for coarse candidate ranking, then re-runs the selected winning BUY and SELL candidates at the requested full replay count. Ranking is based primarily on simulated average R (expectancy); TP-first probability and RR are displayed as supporting statistics.
 

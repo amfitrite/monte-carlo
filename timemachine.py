@@ -128,14 +128,15 @@ def get_gold_bars(source="comex", symbol=None, csv_path=None, force_refresh=Fals
 def build_slot_pool(bars, window=2, interval_minutes=None, seasonality=False):
     """
     Groups historical bars into daily time-of-day slots (UTC).
-    288 slots for 5-minute bars (M5), or 1440 slots for 1-minute bars (M1).
+    288 slots for 5-minute bars (M5), 1440 slots for 1-minute bars (M1),
+    or 1440 // interval_minutes for generic timeframes.
     If seasonality is True, it multiplies total slots by 7 to distinguish day of the week.
     Each slot stores arrays of (open_r, high_r, low_r, close_r) relative to prev_close.
     """
     if interval_minutes is None:
         interval_minutes = 1 if len(bars) > 1 and abs(bars[1]["timestamp"] - bars[0]["timestamp"]) <= 120 else 5
-        
-    time_slots_per_day = 1440 if interval_minutes == 1 else 288
+    int_m = max(1, int(interval_minutes))
+    time_slots_per_day = max(1, 1440 // int_m)
     total_slots = time_slots_per_day * 7 if seasonality else time_slots_per_day
 
     slot_pools = [[] for _ in range(total_slots)]
@@ -148,8 +149,7 @@ def build_slot_pool(bars, window=2, interval_minutes=None, seasonality=False):
         # Bolt: Avoid recomputing dt.hour and dt.minute multiple times (Performance)
         dt = datetime.datetime.fromtimestamp(t, tz=datetime.timezone.utc)
         hour, minute = dt.hour, dt.minute
-        time_slot = (hour * 60 + minute) if interval_minutes == 1 else (hour * 60 + minute) // 5
-        time_slot = time_slot % time_slots_per_day
+        time_slot = ((hour * 60 + minute) // int_m) % time_slots_per_day
         
         if seasonality:
             day_of_week = dt.weekday()
@@ -234,6 +234,7 @@ def run_simulation(
         raise ValueError("Not enough historical bar data for simulation")
         
     pools, interval_minutes, time_slots_per_day, total_slots = build_slot_pool(bars, window=window, seasonality=seasonality)
+    int_m = max(1, int(interval_minutes))
     
     if entry_slot is None:
         if bars and "timestamp" in bars[-1]:
@@ -241,8 +242,7 @@ def run_simulation(
             now_dt = datetime.datetime.fromtimestamp(last_ts, tz=datetime.timezone.utc)
         else:
             now_dt = datetime.datetime.now(datetime.timezone.utc)
-        time_slot = (now_dt.hour * 60 + now_dt.minute) if interval_minutes == 1 else (now_dt.hour * 60 + now_dt.minute) // max(1, interval_minutes)
-        time_slot = time_slot % time_slots_per_day
+        time_slot = ((now_dt.hour * 60 + now_dt.minute) // int_m) % time_slots_per_day
         if seasonality:
             entry_slot = now_dt.weekday() * time_slots_per_day + time_slot
         else:

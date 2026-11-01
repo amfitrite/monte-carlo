@@ -1488,11 +1488,12 @@ def _build_candidate_plans(side, entries, metrics, interval_minutes, config):
     else:
         # Range mode: dynamically bound entries to ensure total plans <= MAX_CANDIDATES_PER_SIDE
         combinations = len(config.get("tp_values", [])) * len(config.get("sl_values", []))
+        effective_entries = entries
         if combinations > 0 and len(entries) * combinations > MAX_CANDIDATES_PER_SIDE:
             max_entries = max(1, MAX_CANDIDATES_PER_SIDE // combinations)
-            entries = entries[:max_entries]
+            effective_entries = entries[:max_entries]
 
-        for entry in entries:
+        for entry in effective_entries:
             for tp_points in config["tp_values"]:
                 for sl_points in config["sl_values"]:
                     p = _build_point_plan(
@@ -1509,7 +1510,7 @@ def _build_candidate_plans(side, entries, metrics, interval_minutes, config):
         )
     for plan in plans:
         plan["tpsl_mode"] = mode
-    return plans
+    return plans, len(effective_entries if mode == "range" else entries)
 
 
 def _run_one(plan, bars_data, horizon_bars, replays, spread, seed,
@@ -1543,7 +1544,7 @@ def _scan_side(side, metrics, bars_data, horizon_bars, search_replays, spread,
                tpsl_config, strategy="atr_swing", candidate_count=0):
     interval = int(bars_data.get("interval_minutes", 5) or 5)
     entries = _candidate_entries(side, metrics, bars=bars_data.get("bars", []), strategy=strategy, candidate_count=candidate_count)
-    plans = _build_candidate_plans(side, entries, metrics, interval, tpsl_config)
+    plans, effective_entries_count = _build_candidate_plans(side, entries, metrics, interval, tpsl_config)
     candidates = []
     for index, plan in enumerate(plans):
         result = _run_one(
@@ -1556,12 +1557,12 @@ def _scan_side(side, metrics, bars_data, horizon_bars, search_replays, spread,
     candidates.sort(key=lambda x: x[0], reverse=True)
     if not candidates:
         raise ValueError(f"No valid {side.upper()} LIMIT candidates could be generated.")
-    return candidates[0], len(candidates)
+    return candidates[0], len(candidates), effective_entries_count
 
 
 
 
-def _finalize_recommendation(side, selected, candidate_count, bars_data,
+def _finalize_recommendation(side, selected, candidate_count, effective_entries_count, bars_data,
                              metrics, horizon_bars, replays, spread, seed,
                              projection_mode, tie_break, seasonality, engine_mode):
     _, plan, coarse, touch = selected
@@ -1596,6 +1597,8 @@ def _finalize_recommendation(side, selected, candidate_count, bars_data,
         if key in plan:
             result["plan"][key] = plan[key]
     result["plan"]["candidate_count_scanned"] = candidate_count
+    result["plan"]["entries_scanned"] = effective_entries_count
+    result["plan"]["effective_entries_scanned"] = effective_entries_count
     result["plan"]["candidate_search_replays"] = int(coarse["plan"]["replays"])
     result["plan"]["entry_fill_probability"] = None
     result["plan"]["entry_touch_probability_pct"] = float(touch["touch_probability_pct"])
@@ -1717,24 +1720,27 @@ def find_dual_recommendations(
     search_replays = min(replays, 600)
     primary_mode = "legacy" if engine_mode == "compare" else engine_mode
 
-    buy_selected, buy_count = _scan_side(
+    buy_selected, buy_count, buy_entries_count = _scan_side(
         "buy", metrics, normalized, horizon_bars, search_replays, spread, seed,
         projection_mode, tie_break, seasonality, primary_mode, tpsl_config,
         strategy=normalized_strategy, candidate_count=candidate_count
     )
-    sell_selected, sell_count = _scan_side(
+    sell_selected, sell_count, sell_entries_count = _scan_side(
         "sell", metrics, normalized, horizon_bars, search_replays, spread, seed + 1000,
         projection_mode, tie_break, seasonality, primary_mode, tpsl_config,
         strategy=normalized_strategy, candidate_count=candidate_count
     )
     buy_res = _finalize_recommendation(
-        "buy", buy_selected, buy_count, normalized, metrics, horizon_bars,
+        "buy", buy_selected, buy_count, buy_entries_count, normalized, metrics, horizon_bars,
         replays, spread, seed, projection_mode, tie_break, seasonality, engine_mode
     )
     sell_res = _finalize_recommendation(
-        "sell", sell_selected, sell_count, normalized, metrics, horizon_bars,
+        "sell", sell_selected, sell_count, sell_entries_count, normalized, metrics, horizon_bars,
         replays, spread, seed, projection_mode, tie_break, seasonality, engine_mode
     )
+
+    effective_entries = min(buy_entries_count, sell_entries_count)
+    quota_adjusted = bool(candidate_count > 0 and (buy_entries_count < candidate_count or sell_entries_count < candidate_count))
 
     buy_r = float(buy_res["plan"]["fill_adjusted_simulated_avg_r"])
     sell_r = float(sell_res["plan"]["fill_adjusted_simulated_avg_r"])
@@ -1792,6 +1798,11 @@ def find_dual_recommendations(
             "strategy": strategy_label,
             "method": f"{strategy_label} candidate grid",
             "candidate_count_requested": candidate_count,
+            "entries_scanned": effective_entries,
+            "effective_entries_per_side": effective_entries,
+            "buy_entries_scanned": buy_entries_count,
+            "sell_entries_scanned": sell_entries_count,
+            "entry_quota_adjusted": quota_adjusted,
             "buy_candidates_scanned": buy_count,
             "sell_candidates_scanned": sell_count,
             "search_replays_per_candidate": search_replays,

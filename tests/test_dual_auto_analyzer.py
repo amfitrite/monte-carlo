@@ -278,31 +278,71 @@ class DualAutoSearchTests(unittest.TestCase):
         self.assertGreater(len(tags), 1)
 
     def test_candidate_count_zero_preserves_exact_baseline(self):
-        bars = make_bars()
-        metrics = analyzer.calculate_market_metrics(bars["bars"])
-        
-        # Test 1: Snapshot test against fixed known baseline ATR swing entries and tags
-        buy_baseline = analyzer._candidate_entries_atr_swing("buy", metrics, candidate_count=0)
-        self.assertEqual(len(buy_baseline), 5)
-        self.assertEqual([float(x) for x in buy_baseline], [2003.65, 2003.28, 2002.91, 2002.95, 2003.36])
-        self.assertEqual(
-            [x.tag for x in buy_baseline],
-            ['ATR Pullback 0.35', 'ATR Pullback 0.60', 'ATR Pullback 0.85', 'Swing Low Support', 'Swing Structure Mid']
-        )
-        
-        sell_baseline = analyzer._candidate_entries_atr_swing("sell", metrics, candidate_count=0)
-        self.assertEqual(len(sell_baseline), 5)
-        self.assertEqual([float(x) for x in sell_baseline], [2004.67, 2005.04, 2005.41, 2004.85, 2004.44])
-        self.assertEqual(
-            [x.tag for x in sell_baseline],
-            ['ATR Premium 0.35', 'ATR Premium 0.60', 'ATR Premium 0.85', 'Swing High Resistance', 'Swing Structure Mid']
-        )
+        # Test across multiple bar sizes to ensure formula invariance (not just one fragile synthetic snapshot)
+        for bar_count in (220, 260):
+            bars = make_bars(bar_count)
+            metrics = analyzer.calculate_market_metrics(bars["bars"])
+            
+            cur, atr = metrics["current_price"], metrics["atr"]
+            lo, hi = metrics["swing_low"], metrics["swing_high"]
+            span = max(hi - lo, atr)
+            price_step = float(metrics.get("price_step", 0.01) or 0.01)
 
-        # Test 2: Full pipeline candidate_count=0 preserves baseline recommendation
+            # Test 1: Dynamic formula invariance for BUY baseline
+            expected_buy = [
+                analyzer._round_to_step(cur - atr * 0.35, price_step),
+                analyzer._round_to_step(cur - atr * 0.60, price_step),
+                analyzer._round_to_step(cur - atr * 0.85, price_step),
+                analyzer._round_to_step(lo + span * 0.15, price_step),
+                analyzer._round_to_step(lo + span * 0.30, price_step)
+            ]
+            buy_baseline = analyzer._candidate_entries_atr_swing("buy", metrics, candidate_count=0)
+            self.assertEqual(len(buy_baseline), 5)
+            self.assertEqual([float(x) for x in buy_baseline], expected_buy)
+            self.assertEqual(
+                [x.tag for x in buy_baseline],
+                ['ATR Pullback 0.35', 'ATR Pullback 0.60', 'ATR Pullback 0.85', 'Swing Low Support', 'Swing Structure Mid']
+            )
+
+            # Test 2: Dynamic formula invariance for SELL baseline
+            expected_sell = [
+                analyzer._round_to_step(cur + atr * 0.35, price_step),
+                analyzer._round_to_step(cur + atr * 0.60, price_step),
+                analyzer._round_to_step(cur + atr * 0.85, price_step),
+                analyzer._round_to_step(hi - span * 0.15, price_step),
+                analyzer._round_to_step(hi - span * 0.30, price_step)
+            ]
+            sell_baseline = analyzer._candidate_entries_atr_swing("sell", metrics, candidate_count=0)
+            self.assertEqual(len(sell_baseline), 5)
+            self.assertEqual([float(x) for x in sell_baseline], expected_sell)
+            self.assertEqual(
+                [x.tag for x in sell_baseline],
+                ['ATR Premium 0.35', 'ATR Premium 0.60', 'ATR Premium 0.85', 'Swing High Resistance', 'Swing Structure Mid']
+            )
+
+        # Test 3: Full pipeline end-to-end equivalence: default call vs explicit candidate_count=0
+        bars = make_bars(260)
+        res_default = analyzer.find_dual_recommendations(bars, horizon_bars=4, replays=100, seed=42)
         res_zero = analyzer.find_dual_recommendations(bars, horizon_bars=4, replays=100, seed=42, candidate_count=0)
+
         self.assertEqual(res_zero["search"]["candidate_count_requested"], 0)
-        self.assertEqual(res_zero["buy"]["plan"]["order_type"], "LIMIT")
-        self.assertEqual(res_zero["sell"]["plan"]["order_type"], "LIMIT")
+        self.assertEqual(res_zero["search"]["entries_scanned"], 5)
+        self.assertEqual(res_zero["search"]["effective_entries_per_side"], 5)
+        self.assertEqual(res_zero["best_direction"], res_default["best_direction"])
+        
+        # BUY plan exact equivalence
+        self.assertEqual(res_zero["buy"]["plan"]["entry"], res_default["buy"]["plan"]["entry"])
+        self.assertEqual(res_zero["buy"]["plan"]["stop"], res_default["buy"]["plan"]["stop"])
+        self.assertEqual(res_zero["buy"]["plan"]["target"], res_default["buy"]["plan"]["target"])
+        self.assertEqual(res_zero["buy"]["odds"]["avg_r"], res_default["buy"]["odds"]["avg_r"])
+        self.assertEqual(res_zero["buy"]["odds"]["target_first_pct"], res_default["buy"]["odds"]["target_first_pct"])
+
+        # SELL plan exact equivalence
+        self.assertEqual(res_zero["sell"]["plan"]["entry"], res_default["sell"]["plan"]["entry"])
+        self.assertEqual(res_zero["sell"]["plan"]["stop"], res_default["sell"]["plan"]["stop"])
+        self.assertEqual(res_zero["sell"]["plan"]["target"], res_default["sell"]["plan"]["target"])
+        self.assertEqual(res_zero["sell"]["odds"]["avg_r"], res_default["sell"]["odds"]["avg_r"])
+        self.assertEqual(res_zero["sell"]["odds"]["target_first_pct"], res_default["sell"]["odds"]["target_first_pct"])
 
     def test_candidate_count_grid_sweep_generates_up_to_20_variations(self):
         bars = make_bars()
@@ -336,6 +376,12 @@ class DualAutoSearchTests(unittest.TestCase):
             sl_min_points=500, sl_max_points=2000, sl_step_points=500     # 4 sl -> 5*4 = 20 combinations
         )
         self.assertEqual(res["tpsl_config"]["mode"], "range")
+        self.assertEqual(res["search"]["candidate_count_requested"], 20)
+        self.assertEqual(res["search"]["entries_scanned"], 10)
+        self.assertEqual(res["search"]["effective_entries_per_side"], 10)
+        self.assertTrue(res["search"]["entry_quota_adjusted"])
+        self.assertEqual(res["search"]["buy_candidates_scanned"], 200)
+        self.assertEqual(res["search"]["sell_candidates_scanned"], 200)
         self.assertLessEqual(res["search"]["buy_candidates_scanned"], analyzer.MAX_CANDIDATES_PER_SIDE)
         self.assertLessEqual(res["search"]["sell_candidates_scanned"], analyzer.MAX_CANDIDATES_PER_SIDE)
         self.assertEqual(res["buy"]["plan"]["order_type"], "LIMIT")
