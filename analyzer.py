@@ -15,7 +15,7 @@ import engine_v2
 import datetime
 
 MAX_TPSL_COMBINATIONS = 20
-MAX_CANDIDATES_PER_SIDE = 100
+MAX_CANDIDATES_PER_SIDE = 1000  # Increased for dynamic grid search
 
 
 def _valid_bars(bars):
@@ -69,7 +69,7 @@ class CandidateEntry(float):
         return obj
 
 
-def _candidate_entries_atr_swing(side, metrics):
+def _candidate_entries_atr_swing(side, metrics, candidate_count=0):
     """Build a compact set of limit prices around ATR pullbacks and swing structure (Baseline / Default)."""
     cur, atr = metrics["current_price"], metrics["atr"]
     lo, hi = metrics["swing_low"], metrics["swing_high"]
@@ -77,24 +77,40 @@ def _candidate_entries_atr_swing(side, metrics):
     price_step = float(metrics.get("price_step", 0.01) or 0.01)
 
     candidates = []
-    if side == "buy":
-        for factor, tag in [(0.35, "ATR Pullback 0.35"), (0.60, "ATR Pullback 0.60"), (0.85, "ATR Pullback 0.85")]:
-            p = cur - atr * factor
-            if cur - 2.5 * atr <= p <= cur - 0.05 * atr:
-                candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=tag))
-        for factor, tag in [(0.15, "Swing Low Support"), (0.30, "Swing Structure Mid")]:
-            p = lo + span * factor
-            if cur - 2.5 * atr <= p <= cur - 0.05 * atr:
-                candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=tag))
+    if candidate_count > 0:
+        # Dynamic parameter variation mode
+        if side == "buy":
+            factors = np.linspace(0.10, 1.50, min(candidate_count, 100))
+            for factor in factors:
+                p = cur - atr * factor
+                if cur - 3.0 * atr <= p <= cur - 0.05 * atr:
+                    candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=f"ATR Pullback {factor:.2f}"))
+        else:
+            factors = np.linspace(0.10, 1.50, min(candidate_count, 100))
+            for factor in factors:
+                p = cur + atr * factor
+                if cur + 0.05 * atr <= p <= cur + 3.0 * atr:
+                    candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=f"ATR Premium {factor:.2f}"))
     else:
-        for factor, tag in [(0.35, "ATR Premium 0.35"), (0.60, "ATR Premium 0.60"), (0.85, "ATR Premium 0.85")]:
-            p = cur + atr * factor
-            if cur + 0.05 * atr <= p <= cur + 2.5 * atr:
-                candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=tag))
-        for factor, tag in [(0.15, "Swing High Resistance"), (0.30, "Swing Structure Mid")]:
-            p = hi - span * factor
-            if cur + 0.05 * atr <= p <= cur + 2.5 * atr:
-                candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=tag))
+        # Legacy mode
+        if side == "buy":
+            for factor, tag in [(0.35, "ATR Pullback 0.35"), (0.60, "ATR Pullback 0.60"), (0.85, "ATR Pullback 0.85")]:
+                p = cur - atr * factor
+                if cur - 2.5 * atr <= p <= cur - 0.05 * atr:
+                    candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=tag))
+            for factor, tag in [(0.15, "Swing Low Support"), (0.30, "Swing Structure Mid")]:
+                p = lo + span * factor
+                if cur - 2.5 * atr <= p <= cur - 0.05 * atr:
+                    candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=tag))
+        else:
+            for factor, tag in [(0.35, "ATR Premium 0.35"), (0.60, "ATR Premium 0.60"), (0.85, "ATR Premium 0.85")]:
+                p = cur + atr * factor
+                if cur + 0.05 * atr <= p <= cur + 2.5 * atr:
+                    candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=tag))
+            for factor, tag in [(0.15, "Swing High Resistance"), (0.30, "Swing Structure Mid")]:
+                p = hi - span * factor
+                if cur + 0.05 * atr <= p <= cur + 2.5 * atr:
+                    candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=tag))
 
     if not candidates:
         fallback = cur - 0.5 * atr if side == "buy" else cur + 0.5 * atr
@@ -102,11 +118,12 @@ def _candidate_entries_atr_swing(side, metrics):
 
     seen = set()
     deduped = []
+    candidates.sort(key=lambda x: abs(float(x) - cur))
     for c in candidates:
         if float(c) not in seen and (c < cur if side == "buy" else c > cur):
             seen.add(float(c))
             deduped.append(c)
-    return deduped[:5]
+    return deduped if candidate_count > 0 else deduped[:5]
 
 
 def _calculate_volume_profile(bars, lookback=60, num_bins=30):
