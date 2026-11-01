@@ -282,10 +282,45 @@ class TimeMachineProGUI:
         self.body_frame = tk.Frame(self.root, bg=DARK_BG, padx=14, pady=12)
         self.body_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Left Control Sidebar (Width ~340px)
-        self.left_panel = tk.Frame(self.body_frame, bg=PANEL_BG, width=340, padx=16, pady=12, highlightbackground=BORDER_COL, highlightthickness=1)
+        # Left Control Sidebar (Width ~340px) with smooth scrolling
+        self.left_panel = tk.Frame(self.body_frame, bg=PANEL_BG, width=340, highlightbackground=BORDER_COL, highlightthickness=1)
         self.left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 12))
         self.left_panel.pack_propagate(False)
+
+        # Scrollable sidebar setup
+        self._sidebar_canvas = tk.Canvas(self.left_panel, bg=PANEL_BG, highlightthickness=0, bd=0)
+        self._sidebar_scrollbar = ttk.Scrollbar(self.left_panel, orient="vertical", command=self._sidebar_canvas.yview)
+        self._sidebar_canvas.configure(yscrollcommand=self._sidebar_scrollbar.set)
+
+        self._sidebar_content = tk.Frame(self._sidebar_canvas, bg=PANEL_BG, padx=12, pady=10)
+        self._sidebar_window = self._sidebar_canvas.create_window((0, 0), window=self._sidebar_content, anchor="nw")
+
+        def _on_sidebar_content_config(event):
+            self._sidebar_canvas.configure(scrollregion=self._sidebar_canvas.bbox("all"))
+
+        def _on_sidebar_canvas_config(event):
+            self._sidebar_canvas.itemconfig(self._sidebar_window, width=event.width)
+
+        self._sidebar_content.bind("<Configure>", _on_sidebar_content_config)
+        self._sidebar_canvas.bind("<Configure>", _on_sidebar_canvas_config)
+
+        # Mousewheel scrolling
+        def _on_mousewheel(event):
+            if self._sidebar_canvas.winfo_exists():
+                delta = -1 * (event.delta // 120) if event.delta else 0
+                self._sidebar_canvas.yview_scroll(delta, "units")
+
+        def _bind_mousewheel(widget):
+            widget.bind("<MouseWheel>", _on_mousewheel, add="+")
+            for child in widget.winfo_children():
+                _bind_mousewheel(child)
+
+        self.bind_sidebar_mousewheel = _bind_mousewheel
+        self._sidebar_canvas.bind("<MouseWheel>", _on_mousewheel)
+        self._sidebar_content.bind("<MouseWheel>", _on_mousewheel)
+
+        self._sidebar_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._sidebar_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         # Right Display Area (Holds either Dual Fan Charts or Single Fan Chart)
         self.right_panel = tk.Frame(self.body_frame, bg=DARK_BG)
@@ -293,6 +328,7 @@ class TimeMachineProGUI:
 
         # Build Sidebar Content
         self._build_sidebar_controls()
+        self.bind_sidebar_mousewheel(self._sidebar_content)
 
         # Build Right Views
         self._build_auto_view()
@@ -302,19 +338,21 @@ class TimeMachineProGUI:
         self._update_view_visibility()
 
     def _build_sidebar_controls(self):
+        parent = self._sidebar_content
+
         # Section 1: Time Horizon Selector (Common to both modes)
-        tk.Label(self.left_panel, text="SCAN TIME HORIZON", font=("Segoe UI", 9, "bold"), fg=GOLD, bg=PANEL_BG).pack(anchor="w", pady=(0, 4))
+        tk.Label(parent, text="SCAN TIME HORIZON", font=("Segoe UI", 9, "bold"), fg=GOLD, bg=PANEL_BG).pack(anchor="w", pady=(0, 4))
         self.horizon_var = tk.StringVar(value="4 Jam (48 bars M5)")
         horizon_options = [h[0] for h in HORIZON_PRESETS_M5]
         self.horizon_combo = ttk.Combobox(
-            self.left_panel, textvariable=self.horizon_var, values=horizon_options, state="readonly", font=("Segoe UI", 9)
+            parent, textvariable=self.horizon_var, values=horizon_options, state="readonly", font=("Segoe UI", 9)
         )
         self.horizon_combo.pack(fill=tk.X, pady=(0, 8))
         self.horizon_combo.bind("<<ComboboxSelected>>", lambda e: self._on_horizon_change())
 
         # Section 1B: Candle Timeframe Base (M5 Default vs M1 Scalper)
-        tk.Label(self.left_panel, text="CANDLE TIMEFRAME BASE", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w", pady=(0, 2))
-        tf_frame = tk.Frame(self.left_panel, bg=PANEL_BG)
+        tk.Label(parent, text="CANDLE TIMEFRAME BASE", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w", pady=(0, 2))
+        tf_frame = tk.Frame(parent, bg=PANEL_BG)
         tf_frame.pack(fill=tk.X, pady=(0, 10))
 
         self.btn_tf_m5 = tk.Button(
@@ -332,7 +370,7 @@ class TimeMachineProGUI:
         self.btn_tf_m1.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 0))
 
         # Section 2: Replays & Spread
-        sub_row = tk.Frame(self.left_panel, bg=PANEL_BG)
+        sub_row = tk.Frame(parent, bg=PANEL_BG)
         sub_row.pack(fill=tk.X, pady=(0, 8))
 
         f_rep = tk.Frame(sub_row, bg=PANEL_BG)
@@ -352,7 +390,7 @@ class TimeMachineProGUI:
         self.spread_entry.pack(fill=tk.X, ipady=2)
 
         # Section 2B: Statistical Methodology Options (User Selectable)
-        method_card = tk.Frame(self.left_panel, bg=CARD_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
+        method_card = tk.Frame(parent, bg=CARD_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
         method_card.pack(fill=tk.X, pady=(0, 10))
 
         tk.Label(method_card, text="⚙️ ENGINE SELECTION", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=CARD_BG).pack(anchor="w")
@@ -405,7 +443,7 @@ class TimeMachineProGUI:
         self.grid_lines_combo.bind("<<ComboboxSelected>>", lambda e: self._on_display_setting_change())
 
         # Section 3A: AUTO MODE SPECIFIC CONTROLS
-        self.auto_sidebar_frame = tk.Frame(self.left_panel, bg=PANEL_BG)
+        self.auto_sidebar_frame = tk.Frame(parent, bg=PANEL_BG)
         
         info_card = tk.Frame(self.auto_sidebar_frame, bg=CARD_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
         info_card.pack(fill=tk.X, pady=(0, 12))
@@ -461,7 +499,7 @@ class TimeMachineProGUI:
         self.import_mt5_btn.pack(fill=tk.X)
 
         # Section 3B: MANUAL MODE SPECIFIC CONTROLS
-        self.manual_sidebar_frame = tk.Frame(self.left_panel, bg=PANEL_BG)
+        self.manual_sidebar_frame = tk.Frame(parent, bg=PANEL_BG)
 
         # Direction Toggle
         tk.Label(self.manual_sidebar_frame, text="Order Direction", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w")
@@ -674,6 +712,8 @@ class TimeMachineProGUI:
                 font=("Segoe UI", 7), fg=TEXT_MUTED, bg=CARD_BG,
                 wraplength=280, justify=tk.LEFT
             ).pack(anchor="w")
+            if hasattr(self, "bind_sidebar_mousewheel"):
+                self.bind_sidebar_mousewheel(self.tpsl_fields_frame)
             return
 
         def add_field(parent, label, variable, row, col, width=9):
@@ -706,6 +746,9 @@ class TimeMachineProGUI:
             add_field(self.tpsl_fields_frame, "SL Min", self.sl_min_points_var, 6, 0)
             add_field(self.tpsl_fields_frame, "SL Max", self.sl_max_points_var, 6, 1)
             add_field(self.tpsl_fields_frame, "SL Step", self.sl_step_points_var, 7, 0)
+
+        if hasattr(self, "bind_sidebar_mousewheel"):
+            self.bind_sidebar_mousewheel(self.tpsl_fields_frame)
 
     def _on_tpsl_mode_change(self):
         self._render_tpsl_fields()
