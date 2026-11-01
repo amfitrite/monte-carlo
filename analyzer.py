@@ -150,10 +150,11 @@ def _build_plan(side, entry, metrics, risk_atr, rr, interval_minutes):
         structural_risk = max(0.0, metrics["swing_high"] - entry) + 0.10 * atr
         risk = max(atr * risk_atr, structural_risk)
         stop, target = entry + risk, entry - risk * rr
+    price_step = float(metrics.get("price_step", 0.01) or 0.01)
     return {
-        "entry_price": round(entry, 2),
-        "stop_loss": round(stop, 2),
-        "take_profit": round(target, 2),
+        "entry_price": _round_to_step(entry, price_step),
+        "stop_loss": _round_to_step(stop, price_step),
+        "take_profit": _round_to_step(target, price_step),
         "side": side,
         "risk_atr": float(risk_atr),
         "target_rr": float(rr),
@@ -187,6 +188,8 @@ def _build_point_plan(side, entry, tp_points, sl_points, point_size, interval_mi
         stop, target = entry + sl_distance, entry - tp_distance
     else:
         raise ValueError("side must be 'buy' or 'sell'.")
+    if stop <= 0 or target <= 0:
+        raise ValueError("Configured TP/SL points produce a non-positive price level.")
     return {
         "entry_price": entry,
         "stop_loss": _round_to_step(stop, point_size),
