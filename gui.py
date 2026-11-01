@@ -1149,6 +1149,7 @@ class TimeMachineProGUI:
             "engine_mode": self.engine_mode_var.get(),
             "tpsl_mode": self.tpsl_mode_var.get(),
             "point_size": self.point_size_var.get(),
+            "point_size_custom": self._point_size_custom,
             "fixed_tp_points": self.fixed_tp_points_var.get(),
             "fixed_sl_points": self.fixed_sl_points_var.get(),
             "tp_min_points": self.tp_min_points_var.get(),
@@ -1221,8 +1222,7 @@ class TimeMachineProGUI:
             ):
                 if key in settings:
                     variable.set(str(settings[key]))
-            if "point_size" in settings:
-                self._point_size_custom = True
+            self._point_size_custom = bool(settings.get("point_size_custom", False))
             self._render_tpsl_fields()
 
             # Restore Statistical Methodology
