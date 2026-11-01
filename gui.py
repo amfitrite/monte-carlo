@@ -395,8 +395,23 @@ class TimeMachineProGUI:
         self.seasonality_combo.pack(fill=tk.X)
         self.seasonality_combo.bind("<<ComboboxSelected>>", lambda e: self._on_methodology_change())
 
-        # Section 2C: Dual Auto TP/SL Search Configuration
-        tpsl_card = tk.Frame(self.left_panel, bg=CARD_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
+        # Section 3A: AUTO MODE SPECIFIC CONTROLS
+        self.auto_sidebar_frame = tk.Frame(self.left_panel, bg=PANEL_BG)
+        
+        info_card = tk.Frame(self.auto_sidebar_frame, bg=CARD_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
+        info_card.pack(fill=tk.X, pady=(0, 12))
+
+        tk.Label(
+            info_card, text="💡 DUAL QUANT SCANNER", font=("Segoe UI", 9, "bold"),
+            fg=CYAN, bg=CARD_BG
+        ).pack(anchor="w")
+        tk.Label(
+            info_card, text="Memindai titik pantulan (Buy Limit di Support & Sell Limit di Resistance) lalu menyimulasikan 2 skenario sekaligus.",
+            font=("Segoe UI", 8), fg=TEXT_MUTED, bg=CARD_BG, wraplength=280, justify=tk.LEFT
+        ).pack(anchor="w", pady=(3, 0))
+
+        # Dual Auto TP/SL search configuration (hidden in Manual mode).
+        tpsl_card = tk.Frame(self.auto_sidebar_frame, bg=CARD_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
         tpsl_card.pack(fill=tk.X, pady=(0, 10))
         tk.Label(tpsl_card, text="🎯 DUAL AUTO TP / SL", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=CARD_BG).pack(anchor="w")
         self.tpsl_mode_var = tk.StringVar(value="Auto Optimize")
@@ -419,21 +434,6 @@ class TimeMachineProGUI:
         self.sl_max_points_var = tk.StringVar(value="2000")
         self.sl_step_points_var = tk.StringVar(value="250")
         self._render_tpsl_fields()
-
-        # Section 3A: AUTO MODE SPECIFIC CONTROLS
-        self.auto_sidebar_frame = tk.Frame(self.left_panel, bg=PANEL_BG)
-        
-        info_card = tk.Frame(self.auto_sidebar_frame, bg=CARD_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
-        info_card.pack(fill=tk.X, pady=(0, 12))
-
-        tk.Label(
-            info_card, text="💡 DUAL QUANT SCANNER", font=("Segoe UI", 9, "bold"),
-            fg=CYAN, bg=CARD_BG
-        ).pack(anchor="w")
-        tk.Label(
-            info_card, text="Memindai titik pantulan (Buy Limit di Support & Sell Limit di Resistance) lalu menyimulasikan 2 skenario sekaligus.",
-            font=("Segoe UI", 8), fg=TEXT_MUTED, bg=CARD_BG, wraplength=280, justify=tk.LEFT
-        ).pack(anchor="w", pady=(3, 0))
 
         self.btn_run_auto = tk.Button(
             self.auto_sidebar_frame, text="⚡ SCAN DUAL SETUPS", font=("Segoe UI", 11, "bold"),
