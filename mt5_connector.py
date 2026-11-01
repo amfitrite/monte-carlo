@@ -130,6 +130,8 @@ def get_mt5_gold_bars(symbol=None, timeframe="M5", count=None, force_refresh=Fal
         "timeframe": tf_upper,
         "interval_minutes": 1 if is_m1 else 5,
         "symbol": resolved_sym,
+        "point_size": float(info.point) if info and info.point > 0 else None,
+        "digits": int(info.digits) if info else None,
         "fetched_at": time.time(),
         "current_price": current_price,
         "spread": spread,
