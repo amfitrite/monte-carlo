@@ -112,6 +112,7 @@ class TimeMachineProGUI:
         self.manual_result = None
         self.dual_results = None
         self.mt5_positions = []
+        self._auto_scan_debounce_timer = None
 
         # Configure taskbar integration for frameless window
         self._setup_taskbar()
@@ -282,15 +283,54 @@ class TimeMachineProGUI:
         self.body_frame = tk.Frame(self.root, bg=DARK_BG, padx=14, pady=12)
         self.body_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Left Control Sidebar (Width ~340px) with smooth scrolling
+        # Left Control Sidebar (Width ~340px) with smooth scrolling & docked action footer
         self.left_panel = tk.Frame(self.body_frame, bg=PANEL_BG, width=340, highlightbackground=BORDER_COL, highlightthickness=1)
         self.left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 12))
         self.left_panel.pack_propagate(False)
 
-        # Scrollable sidebar setup
-        self._sidebar_canvas = tk.Canvas(self.left_panel, bg=PANEL_BG, highlightthickness=0, bd=0)
-        self._sidebar_scrollbar = ttk.Scrollbar(self.left_panel, orient="vertical", command=self._sidebar_canvas.yview)
-        self._sidebar_canvas.configure(yscrollcommand=self._sidebar_scrollbar.set)
+        # Docked Action Footer (Always visible regardless of sidebar scrolling)
+        self.sidebar_footer = tk.Frame(self.left_panel, bg=PANEL_BG, padx=12, pady=10, highlightbackground=BORDER_COL, highlightthickness=1)
+        self.sidebar_footer.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Auto Mode Docked Action Bar
+        self.auto_action_bar = tk.Frame(self.sidebar_footer, bg=PANEL_BG)
+        self.btn_run_auto = tk.Button(
+            self.auto_action_bar, text="⚡ SCAN DUAL SETUPS", font=("Segoe UI", 11, "bold"),
+            bg=GOLD, fg="#0b0f17", activebackground=GOLD_HOVER, activeforeground="#ffffff",
+            relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", pady=8,
+            command=self.execute_auto_scan
+        )
+        self.btn_run_auto.pack(fill=tk.X, pady=(0, 6))
+
+        self.import_mt5_btn = tk.Button(
+            self.auto_action_bar, text="📥 Impor Posisi Aktif MT5", font=("Segoe UI", 9, "bold"),
+            bg=INPUT_BG, fg=CYAN, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", pady=4,
+            command=self._open_positions_selector
+        )
+        self.import_mt5_btn.pack(fill=tk.X)
+        self.auto_action_bar.pack(fill=tk.X)
+
+        # Manual Mode Docked Action Bar
+        self.manual_action_bar = tk.Frame(self.sidebar_footer, bg=PANEL_BG)
+        self.btn_run_manual = tk.Button(
+            self.manual_action_bar, text="🚀 RUN SIMULATION", font=("Segoe UI", 11, "bold"),
+            bg=GOLD, fg="#0b0f17", activebackground=GOLD_HOVER, activeforeground="#ffffff",
+            relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", pady=8,
+            command=self.execute_manual_simulation
+        )
+        self.btn_run_manual.pack(fill=tk.X)
+
+        # Scrollable container for control forms
+        self._scroll_container = tk.Frame(self.left_panel, bg=PANEL_BG)
+        self._scroll_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        # Scrollbar packed first on right to ensure visibility
+        self._sidebar_scrollbar = ttk.Scrollbar(self._scroll_container, orient="vertical")
+        self._sidebar_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self._sidebar_canvas = tk.Canvas(self._scroll_container, bg=PANEL_BG, highlightthickness=0, bd=0, yscrollcommand=self._sidebar_scrollbar.set)
+        self._sidebar_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._sidebar_scrollbar.configure(command=self._sidebar_canvas.yview)
 
         self._sidebar_content = tk.Frame(self._sidebar_canvas, bg=PANEL_BG, padx=12, pady=10)
         self._sidebar_window = self._sidebar_canvas.create_window((0, 0), window=self._sidebar_content, anchor="nw")
@@ -318,9 +358,6 @@ class TimeMachineProGUI:
         self.bind_sidebar_mousewheel = _bind_mousewheel
         self._sidebar_canvas.bind("<MouseWheel>", _on_mousewheel)
         self._sidebar_content.bind("<MouseWheel>", _on_mousewheel)
-
-        self._sidebar_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self._sidebar_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         # Right Display Area (Holds either Dual Fan Charts or Single Fan Chart)
         self.right_panel = tk.Frame(self.body_frame, bg=DARK_BG)
@@ -480,23 +517,16 @@ class TimeMachineProGUI:
         self.sl_min_points_var = tk.StringVar(value="500")
         self.sl_max_points_var = tk.StringVar(value="2000")
         self.sl_step_points_var = tk.StringVar(value="250")
+
+        # Auto re-calculate / re-scan when research points are edited
+        for var in (
+            self.point_size_var, self.fixed_tp_points_var, self.fixed_sl_points_var,
+            self.tp_min_points_var, self.tp_max_points_var, self.tp_step_points_var,
+            self.sl_min_points_var, self.sl_max_points_var, self.sl_step_points_var
+        ):
+            var.trace_add("write", lambda *args: self._on_tpsl_points_modified())
+
         self._render_tpsl_fields()
-
-        self.btn_run_auto = tk.Button(
-            self.auto_sidebar_frame, text="⚡ SCAN DUAL SETUPS", font=("Segoe UI", 11, "bold"),
-            bg=GOLD, fg="#0b0f17", activebackground=GOLD_HOVER, activeforeground="#ffffff",
-            relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", pady=10,
-            command=self.execute_auto_scan
-        )
-        self.btn_run_auto.pack(fill=tk.X, pady=(4, 10))
-
-        # MT5 Quick Import Button in Auto
-        self.import_mt5_btn = tk.Button(
-            self.auto_sidebar_frame, text="📥 Impor Posisi Aktif MT5", font=("Segoe UI", 9, "bold"),
-            bg=INPUT_BG, fg=CYAN, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", pady=5,
-            command=self._open_positions_selector
-        )
-        self.import_mt5_btn.pack(fill=tk.X)
 
         # Section 3B: MANUAL MODE SPECIFIC CONTROLS
         self.manual_sidebar_frame = tk.Frame(parent, bg=PANEL_BG)
@@ -554,14 +584,6 @@ class TimeMachineProGUI:
             font=("Segoe UI", 8, "bold"), fg=GOLD, bg=CARD_BG, pady=4
         )
         self.manual_rr_lbl.pack(fill=tk.X, pady=(2, 10))
-
-        self.btn_run_manual = tk.Button(
-            self.manual_sidebar_frame, text="🚀 RUN SIMULATION", font=("Segoe UI", 11, "bold"),
-            bg=GOLD, fg="#0b0f17", activebackground=GOLD_HOVER, activeforeground="#ffffff",
-            relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", pady=10,
-            command=self.execute_manual_simulation
-        )
-        self.btn_run_manual.pack(fill=tk.X, pady=(4, 0))
 
     # ========================== AUTO DUAL FAN CHART VIEW ==========================
     def _build_auto_view(self):
@@ -670,11 +692,17 @@ class TimeMachineProGUI:
             self.auto_sidebar_frame.pack(fill=tk.BOTH, expand=True)
             self.manual_view_frame.pack_forget()
             self.auto_view_frame.pack(fill=tk.BOTH, expand=True)
+            if hasattr(self, "manual_action_bar") and hasattr(self, "auto_action_bar"):
+                self.manual_action_bar.pack_forget()
+                self.auto_action_bar.pack(fill=tk.X)
         else:
             self.auto_sidebar_frame.pack_forget()
             self.manual_sidebar_frame.pack(fill=tk.BOTH, expand=True)
             self.auto_view_frame.pack_forget()
             self.manual_view_frame.pack(fill=tk.BOTH, expand=True)
+            if hasattr(self, "manual_action_bar") and hasattr(self, "auto_action_bar"):
+                self.auto_action_bar.pack_forget()
+                self.manual_action_bar.pack(fill=tk.X)
 
     def _switch_data_source(self, source):
         self.current_source = source
@@ -752,6 +780,44 @@ class TimeMachineProGUI:
 
     def _on_tpsl_mode_change(self):
         self._render_tpsl_fields()
+        if self.active_mode == "auto":
+            self._on_tpsl_points_modified()
+
+    def _on_tpsl_points_modified(self):
+        """Debounced auto-calculation triggered when research TP/SL points are edited."""
+        if self.active_mode != "auto":
+            return
+        mode = self.tpsl_mode_var.get()
+        if mode == "Auto Optimize":
+            return
+
+        # Quick validation without popping modal dialogs
+        try:
+            p_size = float(self.point_size_var.get().strip())
+            if p_size <= 0:
+                return
+            if mode == "Fixed TP/SL":
+                tp = int(self.fixed_tp_points_var.get().strip())
+                sl = int(self.fixed_sl_points_var.get().strip())
+                if tp <= 0 or sl <= 0:
+                    return
+            elif mode == "TP/SL Range":
+                tp_min = int(self.tp_min_points_var.get().strip())
+                tp_max = int(self.tp_max_points_var.get().strip())
+                tp_step = int(self.tp_step_points_var.get().strip())
+                sl_min = int(self.sl_min_points_var.get().strip())
+                sl_max = int(self.sl_max_points_var.get().strip())
+                sl_step = int(self.sl_step_points_var.get().strip())
+                if tp_min <= 0 or tp_max < tp_min or tp_step <= 0:
+                    return
+                if sl_min <= 0 or sl_max < sl_min or sl_step <= 0:
+                    return
+        except Exception:
+            return  # User might still be typing or backspacing
+
+        if self._auto_scan_debounce_timer:
+            self.root.after_cancel(self._auto_scan_debounce_timer)
+        self._auto_scan_debounce_timer = self.root.after(450, self.execute_auto_scan)
 
     def _get_tpsl_scan_params(self):
         mode = {
