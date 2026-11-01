@@ -231,14 +231,14 @@ class TimeMachineProGUI:
 
         self.btn_mode_auto = tk.Button(
             mode_box, text="🤖 DUAL AUTO-ANALYZER", font=("Segoe UI", 9, "bold"),
-            bg=GOLD, fg="#0b0f17", relief=tk.FLAT, cursor="hand2", padx=12, pady=4,
+            bg=GOLD, fg="#0b0f17", relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", padx=12, pady=4,
             command=lambda: self._set_app_mode("auto")
         )
         self.btn_mode_auto.pack(side=tk.LEFT, padx=(0, 2))
 
         self.btn_mode_manual = tk.Button(
             mode_box, text="🛠️ MANUAL SETUP", font=("Segoe UI", 9, "bold"),
-            bg=INPUT_BG, fg=TEXT_MUTED, relief=tk.FLAT, cursor="hand2", padx=12, pady=4,
+            bg=INPUT_BG, fg=TEXT_MUTED, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", padx=12, pady=4,
             command=lambda: self._set_app_mode("manual")
         )
         self.btn_mode_manual.pack(side=tk.LEFT, padx=(2, 0))
@@ -249,14 +249,14 @@ class TimeMachineProGUI:
 
         self.btn_src_mt5 = tk.Button(
             src_box, text="🔗 MetaTrader 5", font=("Segoe UI", 8, "bold"),
-            bg=GOLD, fg="#0b0f17", relief=tk.FLAT, cursor="hand2", padx=8, pady=3,
+            bg=GOLD, fg="#0b0f17", relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", padx=8, pady=3,
             command=lambda: self._switch_data_source("mt5")
         )
         self.btn_src_mt5.pack(side=tk.LEFT, padx=(0, 2))
 
         self.btn_src_comex = tk.Button(
             src_box, text="🌐 COMEX Gold", font=("Segoe UI", 8, "bold"),
-            bg=INPUT_BG, fg=TEXT_MUTED, relief=tk.FLAT, cursor="hand2", padx=8, pady=3,
+            bg=INPUT_BG, fg=TEXT_MUTED, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", padx=8, pady=3,
             command=lambda: self._switch_data_source("comex")
         )
         self.btn_src_comex.pack(side=tk.LEFT, padx=(2, 0))
@@ -273,7 +273,7 @@ class TimeMachineProGUI:
 
         tk.Button(
             market_pill, text="🔄 Sync", font=("Segoe UI", 8, "bold"),
-            bg=INPUT_BG, fg=GOLD, relief=tk.FLAT, cursor="hand2", padx=6, pady=2,
+            bg=INPUT_BG, fg=GOLD, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", padx=6, pady=2,
             command=self.refresh_data
         ).pack(side=tk.LEFT)
 
@@ -319,14 +319,14 @@ class TimeMachineProGUI:
 
         self.btn_tf_m5 = tk.Button(
             tf_frame, text="M5 (Default)", font=("Segoe UI", 8, "bold"),
-            bg=GOLD, fg="#0b0f17", relief=tk.FLAT, cursor="hand2",
+            bg=GOLD, fg="#0b0f17", relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2",
             command=lambda: self._set_timeframe("M5")
         )
         self.btn_tf_m5.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
 
         self.btn_tf_m1 = tk.Button(
             tf_frame, text="M1 (Scalper)", font=("Segoe UI", 8, "bold"),
-            bg=INPUT_BG, fg=TEXT_MUTED, relief=tk.FLAT, cursor="hand2",
+            bg=INPUT_BG, fg=TEXT_MUTED, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2",
             command=lambda: self._set_timeframe("M1")
         )
         self.btn_tf_m1.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 0))
@@ -347,8 +347,7 @@ class TimeMachineProGUI:
         self.spread_var = tk.StringVar(value="0.24")
         self.spread_entry = tk.Entry(
             f_spr, textvariable=self.spread_var, font=("Segoe UI", 9),
-            bg=INPUT_BG, fg=TEXT_PRIMARY, relief=tk.FLAT,
-            highlightthickness=1, highlightbackground=PANEL_BG, highlightcolor=GOLD
+            bg=INPUT_BG, fg=TEXT_PRIMARY, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD
         )
         self.spread_entry.pack(fill=tk.X, ipady=2)
 
@@ -395,6 +394,16 @@ class TimeMachineProGUI:
         self.seasonality_combo.pack(fill=tk.X)
         self.seasonality_combo.bind("<<ComboboxSelected>>", lambda e: self._on_methodology_change())
 
+        tk.Label(method_card, text="⚙️ DISPLAY SETTINGS", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=CARD_BG).pack(anchor="w", pady=(10, 0))
+        tk.Label(method_card, text="Price Grid Lines", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w", pady=(4, 1))
+        self.grid_lines_var = tk.StringVar(value="25 Lines (Default)")
+        self.grid_lines_combo = ttk.Combobox(
+            method_card, textvariable=self.grid_lines_var,
+            values=["25 Lines (Default)", "50 Lines"], state="readonly", font=("Segoe UI", 8), cursor="hand2"
+        )
+        self.grid_lines_combo.pack(fill=tk.X)
+        self.grid_lines_combo.bind("<<ComboboxSelected>>", lambda e: self._on_display_setting_change())
+
         # Section 3A: AUTO MODE SPECIFIC CONTROLS
         self.auto_sidebar_frame = tk.Frame(self.left_panel, bg=PANEL_BG)
         
@@ -438,7 +447,7 @@ class TimeMachineProGUI:
         self.btn_run_auto = tk.Button(
             self.auto_sidebar_frame, text="⚡ SCAN DUAL SETUPS", font=("Segoe UI", 11, "bold"),
             bg=GOLD, fg="#0b0f17", activebackground=GOLD_HOVER, activeforeground="#ffffff",
-            relief=tk.FLAT, cursor="hand2", pady=10,
+            relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", pady=10,
             command=self.execute_auto_scan
         )
         self.btn_run_auto.pack(fill=tk.X, pady=(4, 10))
@@ -446,7 +455,7 @@ class TimeMachineProGUI:
         # MT5 Quick Import Button in Auto
         self.import_mt5_btn = tk.Button(
             self.auto_sidebar_frame, text="📥 Impor Posisi Aktif MT5", font=("Segoe UI", 9, "bold"),
-            bg=INPUT_BG, fg=CYAN, relief=tk.FLAT, cursor="hand2", pady=5,
+            bg=INPUT_BG, fg=CYAN, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", pady=5,
             command=self._open_positions_selector
         )
         self.import_mt5_btn.pack(fill=tk.X)
@@ -462,14 +471,14 @@ class TimeMachineProGUI:
         self.direction_var = tk.StringVar(value="BUY")
         self.buy_btn = tk.Button(
             dir_frame, text="▲ BUY", font=("Segoe UI", 9, "bold"),
-            bg=GREEN, fg="#ffffff", relief=tk.FLAT, cursor="hand2",
+            bg=GREEN, fg="#ffffff", relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2",
             command=lambda: self._set_direction("BUY")
         )
         self.buy_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
 
         self.sell_btn = tk.Button(
             dir_frame, text="▼ SELL", font=("Segoe UI", 9, "bold"),
-            bg=INPUT_BG, fg=TEXT_MUTED, relief=tk.FLAT, cursor="hand2",
+            bg=INPUT_BG, fg=TEXT_MUTED, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2",
             command=lambda: self._set_direction("SELL")
         )
         self.sell_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 0))
@@ -480,8 +489,7 @@ class TimeMachineProGUI:
         self.manual_entry_var.trace_add("write", self._on_manual_price_change)
         tk.Entry(
             self.manual_sidebar_frame, textvariable=self.manual_entry_var, font=("Segoe UI", 10),
-            bg=INPUT_BG, fg=TEXT_PRIMARY, relief=tk.FLAT,
-            highlightthickness=1, highlightbackground=PANEL_BG, highlightcolor=GOLD
+            bg=INPUT_BG, fg=TEXT_PRIMARY, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD
         ).pack(fill=tk.X, pady=(1, 5), ipady=2)
 
         # Stop Loss
@@ -490,8 +498,7 @@ class TimeMachineProGUI:
         self.manual_stop_var.trace_add("write", self._on_manual_price_change)
         tk.Entry(
             self.manual_sidebar_frame, textvariable=self.manual_stop_var, font=("Segoe UI", 10),
-            bg=INPUT_BG, fg=RED, relief=tk.FLAT,
-            highlightthickness=1, highlightbackground=PANEL_BG, highlightcolor=GOLD
+            bg=INPUT_BG, fg=RED, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD
         ).pack(fill=tk.X, pady=(1, 5), ipady=2)
 
         # Take Profit
@@ -500,8 +507,7 @@ class TimeMachineProGUI:
         self.manual_target_var.trace_add("write", self._on_manual_price_change)
         tk.Entry(
             self.manual_sidebar_frame, textvariable=self.manual_target_var, font=("Segoe UI", 10),
-            bg=INPUT_BG, fg=GREEN, relief=tk.FLAT,
-            highlightthickness=1, highlightbackground=PANEL_BG, highlightcolor=GOLD
+            bg=INPUT_BG, fg=GREEN, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD
         ).pack(fill=tk.X, pady=(1, 5), ipady=2)
 
         # Manual R:R badge
@@ -514,7 +520,7 @@ class TimeMachineProGUI:
         self.btn_run_manual = tk.Button(
             self.manual_sidebar_frame, text="🚀 RUN SIMULATION", font=("Segoe UI", 11, "bold"),
             bg=GOLD, fg="#0b0f17", activebackground=GOLD_HOVER, activeforeground="#ffffff",
-            relief=tk.FLAT, cursor="hand2", pady=10,
+            relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", pady=10,
             command=self.execute_manual_simulation
         )
         self.btn_run_manual.pack(fill=tk.X, pady=(4, 0))
@@ -734,6 +740,12 @@ class TimeMachineProGUI:
         elif self.active_mode == "manual" and self.manual_result:
             self.execute_manual_simulation()
 
+    def _on_display_setting_change(self):
+        if self.active_mode == "auto":
+            self._draw_dual_charts()
+        elif self.active_mode == "manual":
+            self._draw_manual_chart()
+
     # ========================== DATA & EXECUTION ==========================
     def _initial_load_data(self):
         self._fetch_data()
@@ -921,11 +933,12 @@ class TimeMachineProGUI:
             return pad_top + (1.0 - (pr - min_p) / (max_p - min_p)) * plot_h
 
         # Grid lines
-        for i in range(5):
-            y_val = min_p + (max_p - min_p) * (i / 4.0)
+        grid_lines_count = 50 if getattr(self, "grid_lines_var", None) and self.grid_lines_var.get() == "50 Lines" else 25
+        for i in range(grid_lines_count):
+            y_val = min_p + (max_p - min_p) * (i / (grid_lines_count - 1.0))
             y_px = to_y(y_val)
             canvas.create_line(pad_left, y_px, w - pad_right, y_px, fill="#1c2536", dash=(2, 4))
-            canvas.create_text(pad_left - 6, y_px, text=f"${y_val:.1f}", fill=TEXT_MUTED, font=("Segoe UI", 8), anchor="e")
+            canvas.create_text(pad_left - 6, y_px, text=f"${y_val:.2f}", fill=TEXT_MUTED, font=("Segoe UI", 8), anchor="e")
 
         # Time ticks - dynamically scaled by interval
         meta = sim_res.get("meta", {}) or sim_res.get("plan", {})
@@ -1132,7 +1145,7 @@ class TimeMachineProGUI:
                 self.execute_manual_simulation()
                 win.destroy()
 
-            tk.Button(pf, text="Uji Odds ⚡", font=("Segoe UI", 8, "bold"), bg=GOLD, fg="#000", relief=tk.FLAT, cursor="hand2", command=pick).pack(side=tk.RIGHT)
+            tk.Button(pf, text="Uji Odds ⚡", font=("Segoe UI", 8, "bold"), bg=GOLD, fg="#000", relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", command=pick).pack(side=tk.RIGHT)
 
     # ========================== SETTINGS PERSISTENCE ==========================
     def _save_settings(self):
@@ -1148,6 +1161,7 @@ class TimeMachineProGUI:
             "tie_break": self.tie_break_var.get(),
             "seasonality": self.seasonality_var.get(),
             "engine_mode": self.engine_mode_var.get(),
+            "grid_lines": self.grid_lines_var.get(),
             "tpsl_mode": self.tpsl_mode_var.get(),
             "point_size": self.point_size_var.get(),
             "point_size_custom": self._point_size_custom,
@@ -1205,6 +1219,10 @@ class TimeMachineProGUI:
             saved_engine = settings.get("engine_mode", "Legacy V1 (Default)")
             if saved_engine in self.engine_mode_combo["values"]:
                 self.engine_mode_var.set(saved_engine)
+
+            saved_grid_lines = settings.get("grid_lines", "25 Lines (Default)")
+            if saved_grid_lines in self.grid_lines_combo["values"]:
+                self.grid_lines_var.set(saved_grid_lines)
 
             # Restore TP/SL search mode and broker point conversion.
             saved_tpsl_mode = settings.get("tpsl_mode", "Auto Optimize")
