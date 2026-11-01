@@ -108,6 +108,7 @@ class TimeMachineProGUI:
         self.bars_data = None
         self.current_market_price = 3875.0
         self.current_spread = 0.24
+        self._point_size_custom = False
         self.manual_result = None
         self.dual_results = None
         self.mt5_positions = []
@@ -394,6 +395,31 @@ class TimeMachineProGUI:
         self.seasonality_combo.pack(fill=tk.X)
         self.seasonality_combo.bind("<<ComboboxSelected>>", lambda e: self._on_methodology_change())
 
+        # Section 2C: Dual Auto TP/SL Search Configuration
+        tpsl_card = tk.Frame(self.left_panel, bg=CARD_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
+        tpsl_card.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(tpsl_card, text="🎯 DUAL AUTO TP / SL", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=CARD_BG).pack(anchor="w")
+        self.tpsl_mode_var = tk.StringVar(value="Auto Optimize")
+        self.tpsl_mode_combo = ttk.Combobox(
+            tpsl_card, textvariable=self.tpsl_mode_var,
+            values=["Auto Optimize", "Fixed TP/SL", "TP/SL Range"],
+            state="readonly", font=("Segoe UI", 8)
+        )
+        self.tpsl_mode_combo.pack(fill=tk.X, pady=(4, 5))
+        self.tpsl_mode_combo.bind("<<ComboboxSelected>>", lambda e: self._on_tpsl_mode_change())
+        self.tpsl_fields_frame = tk.Frame(tpsl_card, bg=CARD_BG)
+        self.tpsl_fields_frame.pack(fill=tk.X)
+        self.point_size_var = tk.StringVar(value="0.01")
+        self.fixed_tp_points_var = tk.StringVar(value="2000")
+        self.fixed_sl_points_var = tk.StringVar(value="1000")
+        self.tp_min_points_var = tk.StringVar(value="1000")
+        self.tp_max_points_var = tk.StringVar(value="5000")
+        self.tp_step_points_var = tk.StringVar(value="500")
+        self.sl_min_points_var = tk.StringVar(value="500")
+        self.sl_max_points_var = tk.StringVar(value="2000")
+        self.sl_step_points_var = tk.StringVar(value="250")
+        self._render_tpsl_fields()
+
         # Section 3A: AUTO MODE SPECIFIC CONTROLS
         self.auto_sidebar_frame = tk.Frame(self.left_panel, bg=PANEL_BG)
         
@@ -627,6 +653,78 @@ class TimeMachineProGUI:
             self.horizon_var.set("4 Jam (240 bars M1)")
         self.refresh_data()
 
+    def _render_tpsl_fields(self):
+        for child in self.tpsl_fields_frame.winfo_children():
+            child.destroy()
+
+        mode = self.tpsl_mode_var.get()
+        if mode == "Auto Optimize":
+            tk.Label(
+                self.tpsl_fields_frame,
+                text="TP/SL dicari otomatis dari ATR dan struktur harga.",
+                font=("Segoe UI", 7), fg=TEXT_MUTED, bg=CARD_BG,
+                wraplength=280, justify=tk.LEFT
+            ).pack(anchor="w")
+            return
+
+        def add_field(parent, label, variable, row, col, width=9):
+            cell = tk.Frame(parent, bg=CARD_BG)
+            cell.grid(row=row, column=col, sticky="ew", padx=(0 if col == 0 else 6, 0), pady=2)
+            tk.Label(cell, text=label, font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w")
+            tk.Entry(
+                cell, textvariable=variable, width=width, font=("Segoe UI", 8),
+                bg=INPUT_BG, fg=TEXT_PRIMARY, relief=tk.FLAT,
+                highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD
+            ).pack(fill=tk.X, ipady=2)
+            parent.grid_columnconfigure(col, weight=1)
+
+        add_field(self.tpsl_fields_frame, "Point Size ($/point)", self.point_size_var, 0, 0, 12)
+        note = "Satu point dalam nilai harga broker. MT5 mengisi dari symbol_info.point bila tersedia; verifikasi untuk data COMEX/cache."
+        tk.Label(
+            self.tpsl_fields_frame, text=note, font=("Segoe UI", 6),
+            fg=TEXT_MUTED, bg=CARD_BG, wraplength=280, justify=tk.LEFT
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(1, 4))
+
+        if mode == "Fixed TP/SL":
+            add_field(self.tpsl_fields_frame, "Take Profit (points)", self.fixed_tp_points_var, 2, 0)
+            add_field(self.tpsl_fields_frame, "Stop Loss (points)", self.fixed_sl_points_var, 2, 1)
+        else:
+            tk.Label(self.tpsl_fields_frame, text="Take Profit range (points)", font=("Segoe UI", 7, "bold"), fg=GOLD, bg=CARD_BG).grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
+            add_field(self.tpsl_fields_frame, "TP Min", self.tp_min_points_var, 3, 0)
+            add_field(self.tpsl_fields_frame, "TP Max", self.tp_max_points_var, 3, 1)
+            add_field(self.tpsl_fields_frame, "TP Step", self.tp_step_points_var, 4, 0)
+            tk.Label(self.tpsl_fields_frame, text="Stop Loss range (points)", font=("Segoe UI", 7, "bold"), fg=GOLD, bg=CARD_BG).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
+            add_field(self.tpsl_fields_frame, "SL Min", self.sl_min_points_var, 6, 0)
+            add_field(self.tpsl_fields_frame, "SL Max", self.sl_max_points_var, 6, 1)
+            add_field(self.tpsl_fields_frame, "SL Step", self.sl_step_points_var, 7, 0)
+
+    def _on_tpsl_mode_change(self):
+        self._render_tpsl_fields()
+
+    def _get_tpsl_scan_params(self):
+        mode = {
+            "Auto Optimize": "auto",
+            "Fixed TP/SL": "fixed",
+            "TP/SL Range": "range"
+        }.get(self.tpsl_mode_var.get(), "auto")
+        params = {"tpsl_mode": mode}
+        if mode != "auto":
+            params["point_size"] = float(self.point_size_var.get().strip())
+            self._point_size_custom = True
+        if mode == "fixed":
+            params["fixed_tp_points"] = int(self.fixed_tp_points_var.get().strip())
+            params["fixed_sl_points"] = int(self.fixed_sl_points_var.get().strip())
+        elif mode == "range":
+            params.update({
+                "tp_min_points": int(self.tp_min_points_var.get().strip()),
+                "tp_max_points": int(self.tp_max_points_var.get().strip()),
+                "tp_step_points": int(self.tp_step_points_var.get().strip()),
+                "sl_min_points": int(self.sl_min_points_var.get().strip()),
+                "sl_max_points": int(self.sl_max_points_var.get().strip()),
+                "sl_step_points": int(self.sl_step_points_var.get().strip())
+            })
+        return params
+
     def _on_methodology_change(self):
         self.current_projection_mode = PROJECTION_MODES.get(self.proj_mode_var.get(), "free_drift")
         self.current_tie_break = TIE_BREAK_MODES.get(self.tie_break_var.get(), "smart")
@@ -648,6 +746,7 @@ class TimeMachineProGUI:
                 status = mt5_connector.get_mt5_connection()
                 if status.get("connected"):
                     self.bars_data = mt5_connector.get_mt5_gold_bars(timeframe=self.current_timeframe)
+                    self._sync_point_size_from_data()
                     self.current_market_price = self.bars_data.get("current_price", 3875.0)
                     self.current_spread = self.bars_data.get("spread", 0.24)
                     self.mt5_positions = mt5_connector.get_open_gold_positions()
@@ -656,11 +755,23 @@ class TimeMachineProGUI:
                     self.root.after(0, lambda: self.price_badge.configure(text="⚠️ MT5 Disconnected"))
             else:
                 self.bars_data = timemachine.get_gold_bars(source="comex")
+                self._sync_point_size_from_data()
                 self.current_market_price = self.bars_data.get("current_price", 3898.0)
                 self.current_spread = 0.25
                 self.root.after(0, self._update_comex_header)
         except Exception as e:
             self.root.after(0, lambda: self.price_badge.configure(text=f"Sync: {e}"))
+
+    def _sync_point_size_from_data(self):
+        if self._point_size_custom or not isinstance(self.bars_data, dict):
+            return
+        value = self.bars_data.get("point_size")
+        try:
+            point_size = float(value)
+            if point_size > 0:
+                self.point_size_var.set(format(point_size, ".10g"))
+        except (TypeError, ValueError):
+            pass
 
     def _update_mt5_header(self, status):
         sym = self.bars_data.get("symbol", "XAUUSD")
@@ -695,9 +806,14 @@ class TimeMachineProGUI:
         proj_mode = self.current_projection_mode
         tb_mode = self.current_tie_break
         season_mode = self.current_seasonality
+        try:
+            tpsl_params = self._get_tpsl_scan_params()
+        except (TypeError, ValueError) as exc:
+            messagebox.showerror("TP/SL Configuration", f"Periksa konfigurasi TP/SL: {exc}")
+            return
 
         self.btn_run_auto.configure(state=tk.DISABLED, text="⚡ SCANNING...")
-        self.dual_summary_title.configure(text="⏳ Scanning Optimal BUY & SELL Limit setups...", fg=GOLD)
+        self.dual_summary_title.configure(text="⏳ Scanning BUY & SELL candidates...", fg=GOLD)
 
         def worker():
             try:
@@ -709,7 +825,8 @@ class TimeMachineProGUI:
                     projection_mode=proj_mode,
                     tie_break=tb_mode,
                     seasonality=season_mode,
-                    engine_mode={"Legacy V1 (Default)": "legacy", "Enhanced OHLC V2": "v2", "Compare V1 vs V2": "compare"}.get(self.engine_mode_var.get(), "legacy")
+                    engine_mode={"Legacy V1 (Default)": "legacy", "Enhanced OHLC V2": "v2", "Compare V1 vs V2": "compare"}.get(self.engine_mode_var.get(), "legacy"),
+                    **tpsl_params
                 )
                 self.root.after(0, lambda: self._apply_dual_results(res))
             except Exception as e:
@@ -718,6 +835,7 @@ class TimeMachineProGUI:
                 self.root.after(0, lambda: self.btn_run_auto.configure(state=tk.NORMAL, text="⚡ SCAN DUAL SETUPS"))
 
         threading.Thread(target=worker, daemon=True).start()
+
 
     def _apply_dual_results(self, res):
         self.dual_results = res
@@ -737,12 +855,14 @@ class TimeMachineProGUI:
         s_sign = "+" if so["avg_r"] > 0 else ""
         bp = res["buy"]["plan"]
         sp = res["sell"]["plan"]
+        buy_tpsl_label = f"{bp['tp_points']}/{bp['sl_points']} pts" if "tp_points" in bp and "sl_points" in bp else "Auto ATR/Structure"
+        sell_tpsl_label = f"{sp['tp_points']}/{sp['sl_points']} pts" if "tp_points" in sp and "sl_points" in sp else "Auto ATR/Structure"
         self.buy_odds_lbl.configure(
-            text=f"TP: {bo['target_first_pct']:.1f}% | Touch: {bp['entry_touch_probability_pct']:.0f}% | RR: 1:{bp['target_r']:.2f} | Adj.Exp: {bp['fill_adjusted_simulated_avg_r']:+.2f}R",
+            text=f"TP: {bo['target_first_pct']:.1f}% | Touch: {bp['entry_touch_probability_pct']:.0f}% | RR: 1:{bp['target_r']:.2f} | Adj.Exp: {bp['fill_adjusted_simulated_avg_r']:+.2f}R | TP/SL: {buy_tpsl_label}",
             fg=GREEN if bp["fill_adjusted_simulated_avg_r"] > 0 else TEXT_MUTED
         )
         self.sell_odds_lbl.configure(
-            text=f"TP: {so['target_first_pct']:.1f}% | Touch: {sp['entry_touch_probability_pct']:.0f}% | RR: 1:{sp['target_r']:.2f} | Adj.Exp: {sp['fill_adjusted_simulated_avg_r']:+.2f}R",
+            text=f"TP: {so['target_first_pct']:.1f}% | Touch: {sp['entry_touch_probability_pct']:.0f}% | RR: 1:{sp['target_r']:.2f} | Adj.Exp: {sp['fill_adjusted_simulated_avg_r']:+.2f}R | TP/SL: {sell_tpsl_label}",
             fg=RED if sp["fill_adjusted_simulated_avg_r"] > 0 else TEXT_MUTED
         )
 
@@ -1027,6 +1147,16 @@ class TimeMachineProGUI:
             "tie_break": self.tie_break_var.get(),
             "seasonality": self.seasonality_var.get(),
             "engine_mode": self.engine_mode_var.get(),
+            "tpsl_mode": self.tpsl_mode_var.get(),
+            "point_size": self.point_size_var.get(),
+            "fixed_tp_points": self.fixed_tp_points_var.get(),
+            "fixed_sl_points": self.fixed_sl_points_var.get(),
+            "tp_min_points": self.tp_min_points_var.get(),
+            "tp_max_points": self.tp_max_points_var.get(),
+            "tp_step_points": self.tp_step_points_var.get(),
+            "sl_min_points": self.sl_min_points_var.get(),
+            "sl_max_points": self.sl_max_points_var.get(),
+            "sl_step_points": self.sl_step_points_var.get(),
             "manual_direction": self.direction_var.get(),
             "manual_entry": self.manual_entry_var.get(),
             "manual_stop": self.manual_stop_var.get(),
@@ -1073,6 +1203,27 @@ class TimeMachineProGUI:
             saved_engine = settings.get("engine_mode", "Legacy V1 (Default)")
             if saved_engine in self.engine_mode_combo["values"]:
                 self.engine_mode_var.set(saved_engine)
+
+            # Restore TP/SL search mode and broker point conversion.
+            saved_tpsl_mode = settings.get("tpsl_mode", "Auto Optimize")
+            if saved_tpsl_mode in self.tpsl_mode_combo["values"]:
+                self.tpsl_mode_var.set(saved_tpsl_mode)
+            for key, variable in (
+                ("point_size", self.point_size_var),
+                ("fixed_tp_points", self.fixed_tp_points_var),
+                ("fixed_sl_points", self.fixed_sl_points_var),
+                ("tp_min_points", self.tp_min_points_var),
+                ("tp_max_points", self.tp_max_points_var),
+                ("tp_step_points", self.tp_step_points_var),
+                ("sl_min_points", self.sl_min_points_var),
+                ("sl_max_points", self.sl_max_points_var),
+                ("sl_step_points", self.sl_step_points_var)
+            ):
+                if key in settings:
+                    variable.set(str(settings[key]))
+            if "point_size" in settings:
+                self._point_size_custom = True
+            self._render_tpsl_fields()
 
             # Restore Statistical Methodology
             saved_pm = settings.get("projection_mode")
