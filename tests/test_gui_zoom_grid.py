@@ -5,9 +5,13 @@ import analyzer
 import tests.test_dual_auto_analyzer as t
 
 
+import os
+
 class GuiZoomAndGridTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if os.environ.get("DISPLAY") is None:
+            raise unittest.SkipTest("Skipping GUI tests in headless environment without DISPLAY")
         cls.root = tk.Tk()
         cls.root.withdraw()
         cls.bars = t.make_bars(260)
