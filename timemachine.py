@@ -134,7 +134,14 @@ def build_slot_pool(bars, window=2, interval_minutes=None, seasonality=False):
     Each slot stores arrays of (open_r, high_r, low_r, close_r) relative to prev_close.
     """
     if interval_minutes is None:
-        interval_minutes = 1 if len(bars) > 1 and abs(bars[1]["timestamp"] - bars[0]["timestamp"]) <= 120 else 5
+        if len(bars) > 1:
+            diff_sec = abs(bars[1]["timestamp"] - bars[0]["timestamp"])
+            if diff_sec <= 120:
+                interval_minutes = 1
+            else:
+                interval_minutes = max(1, int(round(diff_sec / 60)))
+        else:
+            interval_minutes = 5
     int_m = max(1, int(interval_minutes))
     time_slots_per_day = max(1, 1440 // int_m)
     total_slots = time_slots_per_day * 7 if seasonality else time_slots_per_day
@@ -208,7 +215,8 @@ def run_simulation(
     bars_data: dict = None,
     projection_mode: str = "free_drift",  # "free_drift" (default/recommended), "frozen" (asli), "survival" (kaplan-meier)
     tie_break: str = "smart",  # "smart" (default/recommended), "conservative" (asli), "random"
-    seasonality: bool = False
+    seasonality: bool = False,
+    interval_minutes: int = None
 ):
     """
     Run high-performance Monte Carlo simulation on Gold setup.
@@ -233,7 +241,12 @@ def run_simulation(
     if len(bars) < 200:
         raise ValueError("Not enough historical bar data for simulation")
         
-    pools, interval_minutes, time_slots_per_day, total_slots = build_slot_pool(bars, window=window, seasonality=seasonality)
+    if interval_minutes is None and isinstance(bars_data, dict):
+        interval_minutes = bars_data.get("interval_minutes")
+
+    pools, interval_minutes, time_slots_per_day, total_slots = build_slot_pool(
+        bars, window=window, interval_minutes=interval_minutes, seasonality=seasonality
+    )
     int_m = max(1, int(interval_minutes))
     
     if entry_slot is None:

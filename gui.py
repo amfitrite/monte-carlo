@@ -1218,17 +1218,31 @@ class TimeMachineProGUI:
 
         search_info = res.get("search", {})
         cand_req = search_info.get("candidate_count_requested", 0)
-        eff_entries = search_info.get("effective_entries_per_side", search_info.get("entries_scanned", cand_req))
+        buy_entries = search_info.get("buy_entries_scanned")
+        sell_entries = search_info.get("sell_entries_scanned")
+        if buy_entries is None or sell_entries is None:
+            eff = search_info.get("effective_entries_per_side", search_info.get("entries_scanned", cand_req))
+            if isinstance(eff, dict):
+                buy_entries = eff.get("buy", cand_req)
+                sell_entries = eff.get("sell", cand_req)
+            else:
+                buy_entries = sell_entries = eff
+
         buy_cand = search_info.get("buy_candidates_scanned", 0)
         sell_cand = search_info.get("sell_candidates_scanned", 0)
         quota_adj = search_info.get("entry_quota_adjusted", False)
 
         grid_note = ""
         if cand_req > 0:
-            if quota_adj or (eff_entries < cand_req):
-                grid_note = f" • Grid: {eff_entries}/{cand_req} entri ({buy_cand}+{sell_cand} plan, kuota dinamis)"
+            if buy_entries == sell_entries:
+                entries_str = f"{buy_entries}"
             else:
-                grid_note = f" • Grid: {eff_entries} entri ({buy_cand}+{sell_cand} plan)"
+                entries_str = f"BUY {buy_entries} / SELL {sell_entries}"
+
+            if quota_adj:
+                grid_note = f" • Grid: {entries_str}/{cand_req} entri ({buy_cand}+{sell_cand} plan, kuota dinamis)"
+            else:
+                grid_note = f" • Grid: {entries_str} entri ({buy_cand}+{sell_cand} plan)"
 
         self.dual_summary_title.configure(text=f"⭐ BEST QUANT EDGE: {best_dir} SETUP", fg=col)
         self.dual_summary_desc.configure(text=f"[{strat_lbl}{grid_note}] {summary}")

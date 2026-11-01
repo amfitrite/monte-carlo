@@ -1489,9 +1489,11 @@ def _build_candidate_plans(side, entries, metrics, interval_minutes, config):
         # Range mode: dynamically bound entries to ensure total plans <= MAX_CANDIDATES_PER_SIDE
         combinations = len(config.get("tp_values", [])) * len(config.get("sl_values", []))
         effective_entries = entries
+        quota_capped = False
         if combinations > 0 and len(entries) * combinations > MAX_CANDIDATES_PER_SIDE:
             max_entries = max(1, MAX_CANDIDATES_PER_SIDE // combinations)
             effective_entries = entries[:max_entries]
+            quota_capped = True
 
         for entry in effective_entries:
             for tp_points in config["tp_values"]:
@@ -1510,7 +1512,7 @@ def _build_candidate_plans(side, entries, metrics, interval_minutes, config):
         )
     for plan in plans:
         plan["tpsl_mode"] = mode
-    return plans, len(effective_entries if mode == "range" else entries)
+    return plans, len(effective_entries if mode == "range" else entries), (quota_capped if mode == "range" else False)
 
 
 def _run_one(plan, bars_data, horizon_bars, replays, spread, seed,
@@ -1544,7 +1546,7 @@ def _scan_side(side, metrics, bars_data, horizon_bars, search_replays, spread,
                tpsl_config, strategy="atr_swing", candidate_count=0):
     interval = int(bars_data.get("interval_minutes", 5) or 5)
     entries = _candidate_entries(side, metrics, bars=bars_data.get("bars", []), strategy=strategy, candidate_count=candidate_count)
-    plans, effective_entries_count = _build_candidate_plans(side, entries, metrics, interval, tpsl_config)
+    plans, effective_entries_count, quota_capped = _build_candidate_plans(side, entries, metrics, interval, tpsl_config)
     candidates = []
     for index, plan in enumerate(plans):
         result = _run_one(
@@ -1557,7 +1559,7 @@ def _scan_side(side, metrics, bars_data, horizon_bars, search_replays, spread,
     candidates.sort(key=lambda x: x[0], reverse=True)
     if not candidates:
         raise ValueError(f"No valid {side.upper()} LIMIT candidates could be generated.")
-    return candidates[0], len(candidates), effective_entries_count
+    return candidates[0], len(candidates), effective_entries_count, quota_capped
 
 
 
@@ -1720,12 +1722,12 @@ def find_dual_recommendations(
     search_replays = min(replays, 600)
     primary_mode = "legacy" if engine_mode == "compare" else engine_mode
 
-    buy_selected, buy_count, buy_entries_count = _scan_side(
+    buy_selected, buy_count, buy_entries_count, buy_quota_capped = _scan_side(
         "buy", metrics, normalized, horizon_bars, search_replays, spread, seed,
         projection_mode, tie_break, seasonality, primary_mode, tpsl_config,
         strategy=normalized_strategy, candidate_count=candidate_count
     )
-    sell_selected, sell_count, sell_entries_count = _scan_side(
+    sell_selected, sell_count, sell_entries_count, sell_quota_capped = _scan_side(
         "sell", metrics, normalized, horizon_bars, search_replays, spread, seed + 1000,
         projection_mode, tie_break, seasonality, primary_mode, tpsl_config,
         strategy=normalized_strategy, candidate_count=candidate_count
@@ -1739,8 +1741,11 @@ def find_dual_recommendations(
         replays, spread, seed, projection_mode, tie_break, seasonality, engine_mode
     )
 
-    effective_entries = min(buy_entries_count, sell_entries_count)
-    quota_adjusted = bool(candidate_count > 0 and (buy_entries_count < candidate_count or sell_entries_count < candidate_count))
+    quota_adjusted = bool(buy_quota_capped or sell_quota_capped)
+    effective_entries = (
+        buy_entries_count if buy_entries_count == sell_entries_count
+        else {"buy": buy_entries_count, "sell": sell_entries_count}
+    )
 
     buy_r = float(buy_res["plan"]["fill_adjusted_simulated_avg_r"])
     sell_r = float(sell_res["plan"]["fill_adjusted_simulated_avg_r"])

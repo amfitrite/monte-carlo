@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 import analyzer
+import timemachine
 
 
 def make_bars(count=260):
@@ -411,6 +412,41 @@ class DualAutoSearchTests(unittest.TestCase):
             else:
                 self.assertAlmostEqual(plan["entry"] - plan["target"], 50.0, places=4)
                 self.assertAlmostEqual(plan["stop"] - plan["entry"], 10.0, places=4)
+
+
+    def test_generic_timeframe_slot_pool_inference_and_simulation(self):
+        # 1. Spacing 900s (M15) automatic inference without explicit argument
+        t0 = 1700000000
+        bars_m15 = [
+            {"timestamp": t0 + i * 900, "open": 2000.0, "high": 2005.0, "low": 1995.0, "close": 2002.0}
+            for i in range(210)
+        ]
+        _, interval_inf, slots_inf, _ = timemachine.build_slot_pool(bars_m15)
+        self.assertEqual(interval_inf, 15)
+        self.assertEqual(slots_inf, 96)
+
+        # 2. Spacing 1800s (M30) automatic inference
+        bars_m30 = [
+            {"timestamp": t0 + i * 1800, "open": 2000.0, "high": 2005.0, "low": 1995.0, "close": 2002.0}
+            for i in range(210)
+        ]
+        _, interval_m30, slots_m30, _ = timemachine.build_slot_pool(bars_m30)
+        self.assertEqual(interval_m30, 30)
+        self.assertEqual(slots_m30, 48)
+
+        # 3. Explicit interval_minutes overrides
+        _, interval_exp, slots_exp, _ = timemachine.build_slot_pool(bars_m15, interval_minutes=15)
+        self.assertEqual(interval_exp, 15)
+        self.assertEqual(slots_exp, 96)
+
+        # 4. run_simulation end-to-end with M15 bars_data (both dict and auto-inferred)
+        res_m15 = timemachine.run_simulation(
+            entry_price=2000.0, stop_loss=1990.0, take_profit=2020.0,
+            side="buy", horizon_bars=12, replays=100, seed=42,
+            bars_data={"bars": bars_m15, "interval_minutes": 15}
+        )
+        self.assertIn("odds", res_m15)
+        self.assertEqual(res_m15["plan"]["replays"], 100)
 
 
 if __name__ == "__main__":

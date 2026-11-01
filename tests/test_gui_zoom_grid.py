@@ -195,6 +195,8 @@ class GuiZoomAndGridTests(unittest.TestCase):
                     "candidate_count_requested": 20,
                     "effective_entries_per_side": 10,
                     "entries_scanned": 10,
+                    "buy_entries_scanned": 10,
+                    "sell_entries_scanned": 10,
                     "entry_quota_adjusted": True,
                     "buy_candidates_scanned": 200,
                     "sell_candidates_scanned": 200,
@@ -203,6 +205,24 @@ class GuiZoomAndGridTests(unittest.TestCase):
                 desc = app.dual_summary_desc.cget("text")
                 self.assertIn("10/20 entri", desc)
                 self.assertIn("kuota dinamis", desc)
+
+                # Verify Auto mode with asymmetric buy/sell entries and no quota capping
+                res_auto_asym = dict(self.dual_res)
+                res_auto_asym["search"] = {
+                    "strategy": "ATR Pullback & Swing Structure",
+                    "candidate_count_requested": 20,
+                    "effective_entries_per_side": {"buy": 16, "sell": 13},
+                    "entries_scanned": {"buy": 16, "sell": 13},
+                    "buy_entries_scanned": 16,
+                    "sell_entries_scanned": 13,
+                    "entry_quota_adjusted": False,
+                    "buy_candidates_scanned": 64,
+                    "sell_candidates_scanned": 52,
+                }
+                app._apply_dual_results(res_auto_asym)
+                desc_asym = app.dual_summary_desc.cget("text")
+                self.assertIn("BUY 16 / SELL 13 entri", desc_asym)
+                self.assertNotIn("kuota dinamis", desc_asym)
 
                 # Verify baseline candidate_count=0 summary displays cleanly
                 res_baseline = dict(self.dual_res)
