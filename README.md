@@ -124,14 +124,25 @@ python -m unittest discover -s tests -v
 ```
 
 
-## Dual Auto Analyzer: candidate discovery
+## Dual Auto Analyzer: candidate discovery & Parameter Sweep Grid
 
 Dual Auto Analyzer is the inverse workflow to Manual Monte Carlo:
 
 - **Manual:** the trader supplies Entry, Stop Loss, and Take Profit; the engine evaluates that fixed plan.
-- **Dual Auto:** the analyzer creates multiple BUY LIMIT and SELL LIMIT candidates from recent ATR pullbacks and swing structure, assigns each candidate an SL/TP using ATR risk and RR scenarios, evaluates candidates, and returns the highest-expectancy candidate on each side.
+- **Dual Auto:** the analyzer creates multiple BUY LIMIT and SELL LIMIT candidates from the chosen entry strategy, assigns each candidate an SL/TP using ATR risk, point limits, or locked Risk:Reward scenarios, evaluates candidates, and returns the highest-expectancy candidate on each side.
 
-The scan currently evaluates up to 20 candidates per side (5 entry areas × 2 ATR risk settings × 2 RR settings). It uses a capped replay count for candidate ranking, then re-runs the selected BUY and SELL candidates at the requested replay count. Ranking is based primarily on simulated average R (expectancy); TP-first probability and RR are displayed as supporting statistics.
+### 🎛️ Dynamic Candidate Grid (Parameter Sweep Fine-Tuning)
+Untuk menemukan titik entri paling optimal di XAUUSD, Dual Auto Analyzer kini dilengkapi fitur **Candidate Grid**:
+- **0 (Versi Asli / Baseline - Default):** Menjalankan jalur kode 100% baseline orisinal tanpa variasi tambahan (menjaga kompatibilitas dan identitas penuh versi lama).
+- **5 Variasi (Cepat):** Menghasilkan 5 variasi level entri adaptif di seputar zona strategi.
+- **10 Variasi (Seimbang):** Menghasilkan 10 variasi level entri bertingkat.
+- **20 Variasi (Optimal Parameter Sweep):** Menghasilkan hingga 20 variasi mesh level entri presisi tinggi untuk fine-tuning maksimal.
+
+Fitur ini bersinergi secara mulus dengan:
+- **Pilihan Replays Cepat:** Mendukung pilihan `100`, `250`, `500`, `1,000`, `3,000`, `5,000`, dan `10,000` replays. Pengujian 20 variasi kombinasi entri dengan 100 replays dapat selesai dalam hitungan detik.
+- **Mode Risk:Reward Terkunci:** Misalnya dengan target RR 1:5.0, setiap variasi entri yang dihasilkan grid tetap mengunci rasio 1:5.0 secara ketat, sementara Monte Carlo mencari level entri yang memiliki touch-adjusted simulated expectancy tertinggi.
+
+The scan evaluates candidate plans, using a capped replay count for coarse candidate ranking, then re-runs the selected winning BUY and SELL candidates at the requested full replay count. Ranking is based primarily on simulated average R (expectancy); TP-first probability and RR are displayed as supporting statistics.
 
 **No-trade behavior:** if neither side has positive simulated average R, the analyzer reports `NO TRADE` instead of promoting the least-bad setup. If both sides have positive and similar expectancy, it reports `EQUAL`.
 

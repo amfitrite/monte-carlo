@@ -277,6 +277,55 @@ class DualAutoSearchTests(unittest.TestCase):
         tags = {res_atr["buy"]["plan"]["setup_tag"], res_poc["buy"]["plan"]["setup_tag"], res_zscore["buy"]["plan"]["setup_tag"]}
         self.assertGreater(len(tags), 1)
 
+    def test_candidate_count_zero_preserves_exact_baseline(self):
+        bars = make_bars()
+        res_default = analyzer.find_dual_recommendations(bars, horizon_bars=4, replays=100, seed=42)
+        res_zero = analyzer.find_dual_recommendations(bars, horizon_bars=4, replays=100, seed=42, candidate_count=0)
+        
+        self.assertEqual(res_default["buy"]["plan"]["entry"], res_zero["buy"]["plan"]["entry"])
+        self.assertEqual(res_default["buy"]["plan"]["stop"], res_zero["buy"]["plan"]["stop"])
+        self.assertEqual(res_default["buy"]["plan"]["target"], res_zero["buy"]["plan"]["target"])
+        self.assertEqual(res_default["sell"]["plan"]["entry"], res_zero["sell"]["plan"]["entry"])
+        self.assertEqual(res_default["sell"]["plan"]["stop"], res_zero["sell"]["plan"]["stop"])
+        self.assertEqual(res_default["sell"]["plan"]["target"], res_zero["sell"]["plan"]["target"])
+
+    def test_candidate_count_grid_sweep_generates_up_to_20_variations(self):
+        bars = make_bars()
+        for strat in ("atr_swing", "poc", "zscore", "fvg"):
+            res = analyzer.find_dual_recommendations(
+                bars, horizon_bars=4, replays=100, strategy=strat, candidate_count=20
+            )
+            self.assertEqual(res["search"]["candidate_count_requested"], 20)
+            self.assertGreater(res["search"]["buy_candidates_scanned"], 5)
+            self.assertGreater(res["search"]["sell_candidates_scanned"], 5)
+            self.assertGreater(res["buy"]["plan"]["entry"], 0)
+            self.assertGreater(res["sell"]["plan"]["entry"], 0)
+
+    def test_candidate_count_with_rr_1_to_5_and_100_replays(self):
+        bars = make_bars()
+        res = analyzer.find_dual_recommendations(
+            bars, horizon_bars=4, replays=100, strategy="atr_swing",
+            tpsl_mode="risk_reward", point_size=0.01,
+            rr_ratio=5.0, rr_sl_points=1000,
+            candidate_count=20
+        )
+        self.assertEqual(res["tpsl_config"]["mode"], "risk_reward")
+        self.assertEqual(res["tpsl_config"]["rr_ratio"], 5.0)
+        self.assertEqual(res["search"]["candidate_count_requested"], 20)
+        self.assertEqual(res["search"]["final_replays"], 100)
+        for side in ("buy", "sell"):
+            plan = res[side]["plan"]
+            self.assertEqual(plan["order_type"], "LIMIT")
+            self.assertEqual(plan["target_rr"], 5.0)
+            self.assertEqual(plan["tp_points"], 5000)
+            self.assertEqual(plan["sl_points"], 1000)
+            if side == "buy":
+                self.assertAlmostEqual(plan["target"] - plan["entry"], 50.0, places=4)
+                self.assertAlmostEqual(plan["entry"] - plan["stop"], 10.0, places=4)
+            else:
+                self.assertAlmostEqual(plan["entry"] - plan["target"], 50.0, places=4)
+                self.assertAlmostEqual(plan["stop"] - plan["entry"], 10.0, places=4)
+
 
 if __name__ == "__main__":
     unittest.main()

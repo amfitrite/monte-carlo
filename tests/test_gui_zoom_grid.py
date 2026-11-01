@@ -166,6 +166,22 @@ class GuiZoomAndGridTests(unittest.TestCase):
         self.assertGreater(len(buy_items), 20)
         self.assertGreater(len(sell_items), 20)
 
+    def test_gui_candidate_grid_and_replay_options(self):
+        # Test candidate grid and replay dropdown values
+        expected_grids = [
+            "0 (Versi Asli / Baseline)",
+            "5 Variasi (Cepat)",
+            "10 Variasi (Seimbang)",
+            "20 Variasi (Optimal Brute-Force)"
+        ]
+        var = tk.StringVar(value="0 (Versi Asli / Baseline)")
+        combo = gui.ttk.Combobox(self.root, textvariable=var, values=expected_grids)
+        self.assertEqual(list(combo["values"]), expected_grids)
+        self.assertEqual(int(var.get().split()[0]), 0)
+
+        var.set("20 Variasi (Optimal Brute-Force)")
+        self.assertEqual(int(var.get().split()[0]), 20)
+
 
 if __name__ == "__main__":
     unittest.main()

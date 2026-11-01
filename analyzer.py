@@ -15,7 +15,7 @@ import engine_v2
 import datetime
 
 MAX_TPSL_COMBINATIONS = 20
-MAX_CANDIDATES_PER_SIDE = 100
+MAX_CANDIDATES_PER_SIDE = 200
 
 
 def _valid_bars(bars):
@@ -69,44 +69,85 @@ class CandidateEntry(float):
         return obj
 
 
-def _candidate_entries_atr_swing(side, metrics):
-    """Build a compact set of limit prices around ATR pullbacks and swing structure (Baseline / Default)."""
+def _candidate_entries_atr_swing(side, metrics, candidate_count=0):
+    """Build limit prices around ATR pullbacks and swing structure."""
     cur, atr = metrics["current_price"], metrics["atr"]
     lo, hi = metrics["swing_low"], metrics["swing_high"]
     span = max(hi - lo, atr)
     price_step = float(metrics.get("price_step", 0.01) or 0.01)
 
     candidates = []
+    if candidate_count <= 0:
+        if side == "buy":
+            for factor, tag in [(0.35, "ATR Pullback 0.35"), (0.60, "ATR Pullback 0.60"), (0.85, "ATR Pullback 0.85")]:
+                p = cur - atr * factor
+                if cur - 2.5 * atr <= p <= cur - 0.05 * atr:
+                    candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=tag))
+            for factor, tag in [(0.15, "Swing Low Support"), (0.30, "Swing Structure Mid")]:
+                p = lo + span * factor
+                if cur - 2.5 * atr <= p <= cur - 0.05 * atr:
+                    candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=tag))
+        else:
+            for factor, tag in [(0.35, "ATR Premium 0.35"), (0.60, "ATR Premium 0.60"), (0.85, "ATR Premium 0.85")]:
+                p = cur + atr * factor
+                if cur + 0.05 * atr <= p <= cur + 2.5 * atr:
+                    candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=tag))
+            for factor, tag in [(0.15, "Swing High Resistance"), (0.30, "Swing Structure Mid")]:
+                p = hi - span * factor
+                if cur + 0.05 * atr <= p <= cur + 2.5 * atr:
+                    candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=tag))
+
+        if not candidates:
+            fallback = cur - 0.5 * atr if side == "buy" else cur + 0.5 * atr
+            candidates = [CandidateEntry(_round_to_step(fallback, price_step), tag="ATR Fallback")]
+
+        seen = set()
+        deduped = []
+        for c in candidates:
+            if float(c) not in seen and (c < cur if side == "buy" else c > cur):
+                seen.add(float(c))
+                deduped.append(c)
+        return deduped[:5]
+
+    # Dynamic Candidate Grid Search (Parameter Sweep)
+    target_n = min(int(candidate_count), 25)
+    atr_count = max(3, int(round(target_n * 0.65)))
+    swing_count = max(2, target_n - atr_count)
+
+    atr_factors = np.linspace(0.15, 1.40, num=atr_count)
+    swing_factors = np.linspace(0.05, 0.45, num=swing_count)
+
     if side == "buy":
-        for factor, tag in [(0.35, "ATR Pullback 0.35"), (0.60, "ATR Pullback 0.60"), (0.85, "ATR Pullback 0.85")]:
-            p = cur - atr * factor
+        for factor in atr_factors:
+            p = cur - atr * float(factor)
             if cur - 2.5 * atr <= p <= cur - 0.05 * atr:
-                candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=tag))
-        for factor, tag in [(0.15, "Swing Low Support"), (0.30, "Swing Structure Mid")]:
-            p = lo + span * factor
+                candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=f"ATR Pullback {factor:.2f}x"))
+        for factor in swing_factors:
+            p = lo + span * float(factor)
             if cur - 2.5 * atr <= p <= cur - 0.05 * atr:
-                candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=tag))
+                candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=f"Swing Support {factor:.2f}x"))
     else:
-        for factor, tag in [(0.35, "ATR Premium 0.35"), (0.60, "ATR Premium 0.60"), (0.85, "ATR Premium 0.85")]:
-            p = cur + atr * factor
+        for factor in atr_factors:
+            p = cur + atr * float(factor)
             if cur + 0.05 * atr <= p <= cur + 2.5 * atr:
-                candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=tag))
-        for factor, tag in [(0.15, "Swing High Resistance"), (0.30, "Swing Structure Mid")]:
-            p = hi - span * factor
+                candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=f"ATR Premium {factor:.2f}x"))
+        for factor in swing_factors:
+            p = hi - span * float(factor)
             if cur + 0.05 * atr <= p <= cur + 2.5 * atr:
-                candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=tag))
+                candidates.append(CandidateEntry(_round_to_step(p, price_step), tag=f"Swing Resistance {factor:.2f}x"))
 
     if not candidates:
         fallback = cur - 0.5 * atr if side == "buy" else cur + 0.5 * atr
         candidates = [CandidateEntry(_round_to_step(fallback, price_step), tag="ATR Fallback")]
 
+    candidates.sort(key=lambda x: abs(float(x) - cur))
     seen = set()
     deduped = []
     for c in candidates:
         if float(c) not in seen and (c < cur if side == "buy" else c > cur):
             seen.add(float(c))
             deduped.append(c)
-    return deduped[:5]
+    return deduped[:target_n] if deduped else [CandidateEntry(_round_to_step(cur - 0.5 * atr if side == "buy" else cur + 0.5 * atr, price_step), tag="ATR Fallback")]
 
 
 def _calculate_volume_profile(bars, lookback=60, num_bins=30):
@@ -159,131 +200,227 @@ def _calculate_volume_profile(bars, lookback=60, num_bins=30):
     return {"poc": poc_price, "vah": vah, "val": val}
 
 
-def _candidate_entries_poc(side, metrics, bars):
+def _candidate_entries_poc(side, metrics, bars, candidate_count=0):
     """Build candidate limits based on Volume Profile POC and Value Area retests."""
     cur, atr = metrics["current_price"], metrics["atr"]
     price_step = float(metrics.get("price_step", 0.01) or 0.01)
     if not bars or len(bars) < 20:
-        return _candidate_entries_atr_swing(side, metrics)
+        return _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count)
     vp = _calculate_volume_profile(bars, lookback=60, num_bins=30)
     poc, vah, val = vp["poc"], vp["vah"], vp["val"]
 
     candidates = []
-    if side == "buy":
-        if poc < cur - 0.05 * atr:
-            stop = min(val, poc - 0.5 * atr) - 0.15 * atr
-            target = max(vah, poc + (poc - stop) * 2.0)
-            candidates.append(CandidateEntry(_round_to_step(poc, price_step), stop=stop, target=target, tag="POC Volume Cluster"))
-        if val < cur - 0.05 * atr and abs(val - poc) > 0.1 * atr:
-            stop = val - 0.35 * atr
-            target = max(poc, val + (val - stop) * 2.0)
-            candidates.append(CandidateEntry(_round_to_step(val, price_step), stop=stop, target=target, tag="VAL Support Retest"))
-        if vah < cur - 0.05 * atr:
-            stop = poc - 0.15 * atr
-            target = vah + (vah - stop) * 1.8
-            candidates.append(CandidateEntry(_round_to_step(vah, price_step), stop=stop, target=target, tag="VAH Breakout Retest"))
-        va_mid = 0.5 * (poc + val)
-        if va_mid < cur - 0.05 * atr:
-            stop = val - 0.20 * atr
-            target = vah
-            candidates.append(CandidateEntry(_round_to_step(va_mid, price_step), stop=stop, target=target, tag="Value Area Equilibrium"))
-    else:
-        if poc > cur + 0.05 * atr:
-            stop = max(vah, poc + 0.5 * atr) + 0.15 * atr
-            target = min(val, poc - (stop - poc) * 2.0)
-            candidates.append(CandidateEntry(_round_to_step(poc, price_step), stop=stop, target=target, tag="POC Volume Cluster"))
-        if vah > cur + 0.05 * atr and abs(vah - poc) > 0.1 * atr:
-            stop = vah + 0.35 * atr
-            target = min(poc, vah - (stop - vah) * 2.0)
-            candidates.append(CandidateEntry(_round_to_step(vah, price_step), stop=stop, target=target, tag="VAH Resistance Retest"))
-        if val > cur + 0.05 * atr:
-            stop = poc + 0.15 * atr
-            target = val - (stop - val) * 1.8
-            candidates.append(CandidateEntry(_round_to_step(val, price_step), stop=stop, target=target, tag="VAL Breakdown Retest"))
-        va_mid = 0.5 * (poc + vah)
-        if va_mid > cur + 0.05 * atr:
-            stop = vah + 0.20 * atr
-            target = val
-            candidates.append(CandidateEntry(_round_to_step(va_mid, price_step), stop=stop, target=target, tag="Value Area Equilibrium"))
+    if candidate_count <= 0:
+        if side == "buy":
+            if poc < cur - 0.05 * atr:
+                stop = min(val, poc - 0.5 * atr) - 0.15 * atr
+                target = max(vah, poc + (poc - stop) * 2.0)
+                candidates.append(CandidateEntry(_round_to_step(poc, price_step), stop=stop, target=target, tag="POC Volume Cluster"))
+            if val < cur - 0.05 * atr and abs(val - poc) > 0.1 * atr:
+                stop = val - 0.35 * atr
+                target = max(poc, val + (val - stop) * 2.0)
+                candidates.append(CandidateEntry(_round_to_step(val, price_step), stop=stop, target=target, tag="VAL Support Retest"))
+            if vah < cur - 0.05 * atr:
+                stop = poc - 0.15 * atr
+                target = vah + (vah - stop) * 1.8
+                candidates.append(CandidateEntry(_round_to_step(vah, price_step), stop=stop, target=target, tag="VAH Breakout Retest"))
+            va_mid = 0.5 * (poc + val)
+            if va_mid < cur - 0.05 * atr:
+                stop = val - 0.20 * atr
+                target = vah
+                candidates.append(CandidateEntry(_round_to_step(va_mid, price_step), stop=stop, target=target, tag="Value Area Equilibrium"))
+        else:
+            if poc > cur + 0.05 * atr:
+                stop = max(vah, poc + 0.5 * atr) + 0.15 * atr
+                target = min(val, poc - (stop - poc) * 2.0)
+                candidates.append(CandidateEntry(_round_to_step(poc, price_step), stop=stop, target=target, tag="POC Volume Cluster"))
+            if vah > cur + 0.05 * atr and abs(vah - poc) > 0.1 * atr:
+                stop = vah + 0.35 * atr
+                target = min(poc, vah - (stop - vah) * 2.0)
+                candidates.append(CandidateEntry(_round_to_step(vah, price_step), stop=stop, target=target, tag="VAH Resistance Retest"))
+            if val > cur + 0.05 * atr:
+                stop = poc + 0.15 * atr
+                target = val - (stop - val) * 1.8
+                candidates.append(CandidateEntry(_round_to_step(val, price_step), stop=stop, target=target, tag="VAL Breakdown Retest"))
+            va_mid = 0.5 * (poc + vah)
+            if va_mid > cur + 0.05 * atr:
+                stop = vah + 0.20 * atr
+                target = val
+                candidates.append(CandidateEntry(_round_to_step(va_mid, price_step), stop=stop, target=target, tag="Value Area Equilibrium"))
 
+        seen = set()
+        deduped = []
+        candidates.sort(key=lambda x: abs(float(x) - cur))
+        for c in candidates:
+            if float(c) not in seen and (c < cur if side == "buy" else c > cur):
+                seen.add(float(c))
+                deduped.append(c)
+        return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics, candidate_count=0)
+
+    # Dynamic Candidate Grid Search (Parameter Sweep)
+    target_n = min(int(candidate_count), 25)
+    levels_to_test = []
+    if side == "buy":
+        base_stop = min(val, poc - 0.5 * atr) - 0.20 * atr
+        base_target = max(vah, cur + atr)
+        levels_to_test.append((poc, base_stop, base_target, "POC Core"))
+        levels_to_test.append((val, base_stop, base_target, "VAL Support"))
+        levels_to_test.append((vah, poc - 0.15 * atr, vah + atr, "VAH Breakout Retest"))
+        va_mid = 0.5 * (poc + val)
+        levels_to_test.append((va_mid, base_stop, base_target, "VA Equilibrium"))
+        for frac in [0.25, 0.50, 0.75]:
+            p = min(poc, val) + abs(poc - val) * frac
+            levels_to_test.append((p, base_stop, base_target, f"VA Zone {int(frac*100)}%"))
+        for ext in [0.15, 0.30, 0.50, 0.75, 1.0]:
+            p = min(poc, val) - ext * atr
+            s = p - 0.25 * atr
+            t = poc
+            levels_to_test.append((p, s, t, f"VA Discount {ext:.2f} ATR"))
+    else:
+        base_stop = max(vah, poc + 0.5 * atr) + 0.20 * atr
+        base_target = min(val, cur - atr)
+        levels_to_test.append((poc, base_stop, base_target, "POC Core"))
+        levels_to_test.append((vah, base_stop, base_target, "VAH Resistance"))
+        levels_to_test.append((val, poc + 0.15 * atr, val - atr, "VAL Breakdown Retest"))
+        va_mid = 0.5 * (poc + vah)
+        levels_to_test.append((va_mid, base_stop, base_target, "VA Equilibrium"))
+        for frac in [0.25, 0.50, 0.75]:
+            p = min(poc, vah) + abs(vah - poc) * frac
+            levels_to_test.append((p, base_stop, base_target, f"VA Zone {int(frac*100)}%"))
+        for ext in [0.15, 0.30, 0.50, 0.75, 1.0]:
+            p = max(poc, vah) + ext * atr
+            s = p + 0.25 * atr
+            t = poc
+            levels_to_test.append((p, s, t, f"VA Premium {ext:.2f} ATR"))
+
+    for p, s, t, tag in levels_to_test:
+        if side == "buy" and p < cur - 0.05 * atr:
+            candidates.append(CandidateEntry(_round_to_step(p, price_step), stop=s, target=t, tag=tag))
+        elif side == "sell" and p > cur + 0.05 * atr:
+            candidates.append(CandidateEntry(_round_to_step(p, price_step), stop=s, target=t, tag=tag))
+
+    candidates.sort(key=lambda x: abs(float(x) - cur))
     seen = set()
     deduped = []
-    candidates.sort(key=lambda x: abs(float(x) - cur))
     for c in candidates:
         if float(c) not in seen and (c < cur if side == "buy" else c > cur):
             seen.add(float(c))
             deduped.append(c)
-    return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics)
+    return deduped[:target_n] if deduped else _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count)
 
 
-def _candidate_entries_fvg(side, metrics, bars):
+def _candidate_entries_fvg(side, metrics, bars, candidate_count=0):
     """Build candidate limits based on Fair Value Gaps (FVG) and Liquidity Sweeps."""
     cur, atr = metrics["current_price"], metrics["atr"]
     price_step = float(metrics.get("price_step", 0.01) or 0.01)
     if not bars or len(bars) < 20:
-        return _candidate_entries_atr_swing(side, metrics)
+        return _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count)
     recent = bars[-min(len(bars), 60):]
     candidates = []
 
+    if candidate_count <= 0:
+        if side == "buy":
+            for i in range(2, len(recent)):
+                gap_bottom = float(recent[i - 2]["high"])
+                gap_top = float(recent[i]["low"])
+                if gap_top > gap_bottom + 0.04 * atr and gap_top < cur - 0.05 * atr:
+                    ce = 0.5 * (gap_bottom + gap_top)
+                    stop = gap_bottom - 0.15 * atr
+                    target = cur + max(atr, (ce - stop) * 2.5)
+                    candidates.append(CandidateEntry(_round_to_step(ce, price_step), stop=stop, target=target, tag="FVG 50% CE Midpoint"))
+                    candidates.append(CandidateEntry(_round_to_step(gap_top, price_step), stop=stop, target=target, tag="FVG Top Mitigation"))
+            for i in range(5, len(recent) - 1):
+                prior_low = float(min(b["low"] for b in recent[max(0, i - 10):i]))
+                if float(recent[i]["low"]) < prior_low and float(recent[i]["close"]) > prior_low and prior_low < cur - 0.05 * atr:
+                    stop = float(recent[i]["low"]) - 0.20 * atr
+                    target = cur + max(atr, (prior_low - stop) * 2.0)
+                    candidates.append(CandidateEntry(_round_to_step(prior_low, price_step), stop=stop, target=target, tag="Liquidity Sweep Reversal"))
+        else:
+            for i in range(2, len(recent)):
+                gap_top = float(recent[i - 2]["low"])
+                gap_bottom = float(recent[i]["high"])
+                if gap_top > gap_bottom + 0.04 * atr and gap_bottom > cur + 0.05 * atr:
+                    ce = 0.5 * (gap_bottom + gap_top)
+                    stop = gap_top + 0.15 * atr
+                    target = cur - max(atr, (stop - ce) * 2.5)
+                    candidates.append(CandidateEntry(_round_to_step(ce, price_step), stop=stop, target=target, tag="FVG 50% CE Midpoint"))
+                    candidates.append(CandidateEntry(_round_to_step(gap_bottom, price_step), stop=stop, target=target, tag="FVG Bottom Mitigation"))
+            for i in range(5, len(recent) - 1):
+                prior_high = float(max(b["high"] for b in recent[max(0, i - 10):i]))
+                if float(recent[i]["high"]) > prior_high and float(recent[i]["close"]) < prior_high and prior_high > cur + 0.05 * atr:
+                    stop = float(recent[i]["high"]) + 0.20 * atr
+                    target = cur - max(atr, (stop - prior_high) * 2.0)
+                    candidates.append(CandidateEntry(_round_to_step(prior_high, price_step), stop=stop, target=target, tag="Liquidity Sweep Reversal"))
+
+        seen = set()
+        deduped = []
+        candidates.sort(key=lambda x: abs(float(x) - cur))
+        for c in candidates:
+            if float(c) not in seen and (c < cur if side == "buy" else c > cur):
+                seen.add(float(c))
+                deduped.append(c)
+        return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics, candidate_count=0)
+
+    # Dynamic Candidate Grid Search (Parameter Sweep)
+    target_n = min(int(candidate_count), 25)
     if side == "buy":
         for i in range(2, len(recent)):
             gap_bottom = float(recent[i - 2]["high"])
             gap_top = float(recent[i]["low"])
-            if gap_top > gap_bottom + 0.04 * atr and gap_top < cur - 0.05 * atr:
-                ce = 0.5 * (gap_bottom + gap_top)
+            if gap_top > gap_bottom + 0.03 * atr and gap_top < cur - 0.05 * atr:
                 stop = gap_bottom - 0.15 * atr
-                target = cur + max(atr, (ce - stop) * 2.5)
-                candidates.append(CandidateEntry(_round_to_step(ce, price_step), stop=stop, target=target, tag="FVG 50% CE Midpoint"))
-                candidates.append(CandidateEntry(_round_to_step(gap_top, price_step), stop=stop, target=target, tag="FVG Top Mitigation"))
+                target = cur + max(atr, (gap_top - stop) * 2.5)
+                for frac in [0.25, 0.50, 0.75, 1.0]:
+                    level = gap_bottom + (gap_top - gap_bottom) * frac
+                    candidates.append(CandidateEntry(_round_to_step(level, price_step), stop=stop, target=target, tag=f"FVG Retest {int(frac*100)}%"))
         for i in range(5, len(recent) - 1):
             prior_low = float(min(b["low"] for b in recent[max(0, i - 10):i]))
             if float(recent[i]["low"]) < prior_low and float(recent[i]["close"]) > prior_low and prior_low < cur - 0.05 * atr:
                 stop = float(recent[i]["low"]) - 0.20 * atr
                 target = cur + max(atr, (prior_low - stop) * 2.0)
                 candidates.append(CandidateEntry(_round_to_step(prior_low, price_step), stop=stop, target=target, tag="Liquidity Sweep Reversal"))
+                deep_sweep = 0.5 * (prior_low + float(recent[i]["low"]))
+                candidates.append(CandidateEntry(_round_to_step(deep_sweep, price_step), stop=stop, target=target, tag="Deep Sweep Retest"))
     else:
         for i in range(2, len(recent)):
             gap_top = float(recent[i - 2]["low"])
             gap_bottom = float(recent[i]["high"])
-            if gap_top > gap_bottom + 0.04 * atr and gap_bottom > cur + 0.05 * atr:
-                ce = 0.5 * (gap_bottom + gap_top)
+            if gap_top > gap_bottom + 0.03 * atr and gap_bottom > cur + 0.05 * atr:
                 stop = gap_top + 0.15 * atr
-                target = cur - max(atr, (stop - ce) * 2.5)
-                candidates.append(CandidateEntry(_round_to_step(ce, price_step), stop=stop, target=target, tag="FVG 50% CE Midpoint"))
-                candidates.append(CandidateEntry(_round_to_step(gap_bottom, price_step), stop=stop, target=target, tag="FVG Bottom Mitigation"))
+                target = cur - max(atr, (stop - gap_bottom) * 2.5)
+                for frac in [0.25, 0.50, 0.75, 1.0]:
+                    level = gap_top - (gap_top - gap_bottom) * frac
+                    candidates.append(CandidateEntry(_round_to_step(level, price_step), stop=stop, target=target, tag=f"FVG Retest {int(frac*100)}%"))
         for i in range(5, len(recent) - 1):
             prior_high = float(max(b["high"] for b in recent[max(0, i - 10):i]))
             if float(recent[i]["high"]) > prior_high and float(recent[i]["close"]) < prior_high and prior_high > cur + 0.05 * atr:
                 stop = float(recent[i]["high"]) + 0.20 * atr
                 target = cur - max(atr, (stop - prior_high) * 2.0)
                 candidates.append(CandidateEntry(_round_to_step(prior_high, price_step), stop=stop, target=target, tag="Liquidity Sweep Reversal"))
+                deep_sweep = 0.5 * (prior_high + float(recent[i]["high"]))
+                candidates.append(CandidateEntry(_round_to_step(deep_sweep, price_step), stop=stop, target=target, tag="Deep Sweep Retest"))
 
+    candidates.sort(key=lambda x: abs(float(x) - cur))
     seen = set()
     deduped = []
-    candidates.sort(key=lambda x: abs(float(x) - cur))
     for c in candidates:
         if float(c) not in seen and (c < cur if side == "buy" else c > cur):
             seen.add(float(c))
             deduped.append(c)
-    return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics)
+    return deduped[:target_n] if deduped else _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count)
 
 
-def _candidate_entries_orb(side, metrics, bars):
+def _candidate_entries_orb(side, metrics, bars, candidate_count=0):
     """Build candidate limits based on Opening Range Breakout (ORB) levels."""
     cur, atr = metrics["current_price"], metrics["atr"]
     price_step = float(metrics.get("price_step", 0.01) or 0.01)
     if not bars or len(bars) < 20:
-        return _candidate_entries_atr_swing(side, metrics)
+        return _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count)
 
-    # Find the start of the current or most recent major trading session
-    # Major sessions (UTC): Asia (00:00), London (08:00), NY (13:00/14:00 - using 13:00 as proxy)
     session_starts = [0, 8, 13]
-    recent_bars = bars[-min(len(bars), 288):] # Look back up to 1 day
+    recent_bars = bars[-min(len(bars), 288):]
 
     orb_window = []
-    # Search backwards for a session start boundary.
-    # To get the absolute start of the session, we find the first bar that matches the criteria
-    # by continuing to search backwards until we hit a bar from the previous hour.
     found_start_idx = -1
     for i in range(len(recent_bars) - 1, -1, -1):
         dt = datetime.datetime.fromtimestamp(recent_bars[i]["timestamp"], tz=datetime.timezone.utc)
@@ -297,7 +434,6 @@ def _candidate_entries_orb(side, metrics, bars):
         orb_window = recent_bars[found_start_idx:end_idx]
 
     if not orb_window:
-        # Fallback to the original blind lookback if no clean session start found
         lookback = min(len(bars), 36)
         session_bars = bars[-lookback:]
         orb_window = session_bars[:min(12, len(session_bars))]
@@ -308,59 +444,100 @@ def _candidate_entries_orb(side, metrics, bars):
     orb_span = max(orb_high - orb_low, 0.5 * atr)
 
     candidates = []
-    if side == "buy":
-        if orb_high < cur - 0.05 * atr:
-            stop = orb_mid - 0.15 * atr
-            target = orb_high + orb_span * 1.5
-            candidates.append(CandidateEntry(_round_to_step(orb_high, price_step), stop=stop, target=target, tag="ORB High Retest Support"))
-        if orb_mid < cur - 0.05 * atr:
-            stop = orb_low - 0.15 * atr
-            target = orb_high + orb_span * 0.8
-            candidates.append(CandidateEntry(_round_to_step(orb_mid, price_step), stop=stop, target=target, tag="ORB Equilibrium Retest"))
-        if orb_low < cur - 0.05 * atr:
-            stop = orb_low - 0.35 * atr
-            target = orb_high
-            candidates.append(CandidateEntry(_round_to_step(orb_low, price_step), stop=stop, target=target, tag="ORB Low Range Bounce"))
-        ext_low = orb_low - 0.5 * orb_span
-        if ext_low < cur - 0.05 * atr:
-            stop = ext_low - 0.30 * atr
-            target = orb_mid
-            candidates.append(CandidateEntry(_round_to_step(ext_low, price_step), stop=stop, target=target, tag="ORB Extension Discount"))
-    else:
-        if orb_low > cur + 0.05 * atr:
-            stop = orb_mid + 0.15 * atr
-            target = orb_low - orb_span * 1.5
-            candidates.append(CandidateEntry(_round_to_step(orb_low, price_step), stop=stop, target=target, tag="ORB Low Retest Resistance"))
-        if orb_mid > cur + 0.05 * atr:
-            stop = orb_high + 0.15 * atr
-            target = orb_low - orb_span * 0.8
-            candidates.append(CandidateEntry(_round_to_step(orb_mid, price_step), stop=stop, target=target, tag="ORB Equilibrium Retest"))
-        if orb_high > cur + 0.05 * atr:
-            stop = orb_high + 0.35 * atr
-            target = orb_low
-            candidates.append(CandidateEntry(_round_to_step(orb_high, price_step), stop=stop, target=target, tag="ORB High Range Rejection"))
-        ext_high = orb_high + 0.5 * orb_span
-        if ext_high > cur + 0.05 * atr:
-            stop = ext_high + 0.30 * atr
-            target = orb_mid
-            candidates.append(CandidateEntry(_round_to_step(ext_high, price_step), stop=stop, target=target, tag="ORB Extension Premium"))
+    if candidate_count <= 0:
+        if side == "buy":
+            if orb_high < cur - 0.05 * atr:
+                stop = orb_mid - 0.15 * atr
+                target = orb_high + orb_span * 1.5
+                candidates.append(CandidateEntry(_round_to_step(orb_high, price_step), stop=stop, target=target, tag="ORB High Retest Support"))
+            if orb_mid < cur - 0.05 * atr:
+                stop = orb_low - 0.15 * atr
+                target = orb_high + orb_span * 0.8
+                candidates.append(CandidateEntry(_round_to_step(orb_mid, price_step), stop=stop, target=target, tag="ORB Equilibrium Retest"))
+            if orb_low < cur - 0.05 * atr:
+                stop = orb_low - 0.35 * atr
+                target = orb_high
+                candidates.append(CandidateEntry(_round_to_step(orb_low, price_step), stop=stop, target=target, tag="ORB Low Range Bounce"))
+            ext_low = orb_low - 0.5 * orb_span
+            if ext_low < cur - 0.05 * atr:
+                stop = ext_low - 0.30 * atr
+                target = orb_mid
+                candidates.append(CandidateEntry(_round_to_step(ext_low, price_step), stop=stop, target=target, tag="ORB Extension Discount"))
+        else:
+            if orb_low > cur + 0.05 * atr:
+                stop = orb_mid + 0.15 * atr
+                target = orb_low - orb_span * 1.5
+                candidates.append(CandidateEntry(_round_to_step(orb_low, price_step), stop=stop, target=target, tag="ORB Low Retest Resistance"))
+            if orb_mid > cur + 0.05 * atr:
+                stop = orb_high + 0.15 * atr
+                target = orb_low - orb_span * 0.8
+                candidates.append(CandidateEntry(_round_to_step(orb_mid, price_step), stop=stop, target=target, tag="ORB Equilibrium Retest"))
+            if orb_high > cur + 0.05 * atr:
+                stop = orb_high + 0.35 * atr
+                target = orb_low
+                candidates.append(CandidateEntry(_round_to_step(orb_high, price_step), stop=stop, target=target, tag="ORB High Range Rejection"))
+            ext_high = orb_high + 0.5 * orb_span
+            if ext_high > cur + 0.05 * atr:
+                stop = ext_high + 0.30 * atr
+                target = orb_mid
+                candidates.append(CandidateEntry(_round_to_step(ext_high, price_step), stop=stop, target=target, tag="ORB Extension Premium"))
 
+        seen = set()
+        deduped = []
+        candidates.sort(key=lambda x: abs(float(x) - cur))
+        for c in candidates:
+            if float(c) not in seen and (c < cur if side == "buy" else c > cur):
+                seen.add(float(c))
+                deduped.append(c)
+        return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics, candidate_count=0)
+
+    # Dynamic Candidate Grid Search (Parameter Sweep)
+    target_n = min(int(candidate_count), 25)
+    if side == "buy":
+        for frac in [0.0, 0.236, 0.382, 0.50, 0.618, 0.786, 1.0]:
+            p = orb_high - frac * orb_span
+            s = orb_low - 0.25 * atr
+            t = orb_high + 0.5 * orb_span
+            tag = f"ORB Range {int(frac*100)}%" if frac > 0 else "ORB High Retest"
+            if p < cur - 0.05 * atr:
+                candidates.append(CandidateEntry(_round_to_step(p, price_step), stop=s, target=t, tag=tag))
+        for ext in [0.20, 0.40, 0.60, 0.80, 1.0, 1.25]:
+            p = orb_low - ext * orb_span
+            s = p - 0.25 * atr
+            t = orb_mid
+            if p < cur - 0.05 * atr:
+                candidates.append(CandidateEntry(_round_to_step(p, price_step), stop=s, target=t, tag=f"ORB Ext Discount -{ext:.2f}x"))
+    else:
+        for frac in [0.0, 0.236, 0.382, 0.50, 0.618, 0.786, 1.0]:
+            p = orb_low + frac * orb_span
+            s = orb_high + 0.25 * atr
+            t = orb_low - 0.5 * orb_span
+            tag = f"ORB Range {int(frac*100)}%" if frac > 0 else "ORB Low Retest"
+            if p > cur + 0.05 * atr:
+                candidates.append(CandidateEntry(_round_to_step(p, price_step), stop=s, target=t, tag=tag))
+        for ext in [0.20, 0.40, 0.60, 0.80, 1.0, 1.25]:
+            p = orb_high + ext * orb_span
+            s = p + 0.25 * atr
+            t = orb_mid
+            if p > cur + 0.05 * atr:
+                candidates.append(CandidateEntry(_round_to_step(p, price_step), stop=s, target=t, tag=f"ORB Ext Premium +{ext:.2f}x"))
+
+    candidates.sort(key=lambda x: abs(float(x) - cur))
     seen = set()
     deduped = []
-    candidates.sort(key=lambda x: abs(float(x) - cur))
     for c in candidates:
         if float(c) not in seen and (c < cur if side == "buy" else c > cur):
             seen.add(float(c))
             deduped.append(c)
-    return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics)
+    return deduped[:target_n] if deduped else _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count)
 
 
-def _candidate_entries_zscore(side, metrics, bars):
+def _candidate_entries_zscore(side, metrics, bars, candidate_count=0):
     """Build candidate limits based on Bollinger Bands Extreme Deviations & Z-Score."""
     cur, atr = metrics["current_price"], metrics["atr"]
     price_step = float(metrics.get("price_step", 0.01) or 0.01)
     if not bars or len(bars) < 20:
-        return _candidate_entries_atr_swing(side, metrics)
+        return _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count)
     recent = bars[-min(len(bars), 30):]
     closes = np.asarray([b["close"] for b in recent], dtype=float)
     mean = float(np.mean(closes))
@@ -368,50 +545,78 @@ def _candidate_entries_zscore(side, metrics, bars):
     std = max(std, 0.25 * atr)
 
     candidates = []
-    if side == "buy":
-        b20 = mean - 2.0 * std
-        if b20 < cur - 0.05 * atr:
-            stop = mean - 3.2 * std
-            target = mean
-            candidates.append(CandidateEntry(_round_to_step(b20, price_step), stop=stop, target=target, tag="Bollinger -2.0 Sigma Lower Band"))
-        b25 = mean - 2.5 * std
-        if b25 < cur - 0.05 * atr:
-            stop = mean - 3.8 * std
-            target = mean - 0.5 * std
-            candidates.append(CandidateEntry(_round_to_step(b25, price_step), stop=stop, target=target, tag="Bollinger -2.5 Sigma Extreme Oversold"))
-        b15 = mean - 1.5 * std
-        if b15 < cur - 0.05 * atr:
-            stop = mean - 2.5 * std
-            target = mean + 0.5 * std
-            candidates.append(CandidateEntry(_round_to_step(b15, price_step), stop=stop, target=target, tag="Bollinger -1.5 Sigma Dynamic Support"))
-    else:
-        b20 = mean + 2.0 * std
-        if b20 > cur + 0.05 * atr:
-            stop = mean + 3.2 * std
-            target = mean
-            candidates.append(CandidateEntry(_round_to_step(b20, price_step), stop=stop, target=target, tag="Bollinger +2.0 Sigma Upper Band"))
-        b25 = mean + 2.5 * std
-        if b25 > cur + 0.05 * atr:
-            stop = mean + 3.8 * std
-            target = mean + 0.5 * std
-            candidates.append(CandidateEntry(_round_to_step(b25, price_step), stop=stop, target=target, tag="Bollinger +2.5 Sigma Extreme Overbought"))
-        b15 = mean + 1.5 * std
-        if b15 > cur + 0.05 * atr:
-            stop = mean + 2.5 * std
-            target = mean - 0.5 * std
-            candidates.append(CandidateEntry(_round_to_step(b15, price_step), stop=stop, target=target, tag="Bollinger +1.5 Sigma Dynamic Resistance"))
+    if candidate_count <= 0:
+        if side == "buy":
+            b20 = mean - 2.0 * std
+            if b20 < cur - 0.05 * atr:
+                stop = mean - 3.2 * std
+                target = mean
+                candidates.append(CandidateEntry(_round_to_step(b20, price_step), stop=stop, target=target, tag="Bollinger -2.0 Sigma Lower Band"))
+            b25 = mean - 2.5 * std
+            if b25 < cur - 0.05 * atr:
+                stop = mean - 3.8 * std
+                target = mean - 0.5 * std
+                candidates.append(CandidateEntry(_round_to_step(b25, price_step), stop=stop, target=target, tag="Bollinger -2.5 Sigma Extreme Oversold"))
+            b15 = mean - 1.5 * std
+            if b15 < cur - 0.05 * atr:
+                stop = mean - 2.5 * std
+                target = mean + 0.5 * std
+                candidates.append(CandidateEntry(_round_to_step(b15, price_step), stop=stop, target=target, tag="Bollinger -1.5 Sigma Dynamic Support"))
+        else:
+            b20 = mean + 2.0 * std
+            if b20 > cur + 0.05 * atr:
+                stop = mean + 3.2 * std
+                target = mean
+                candidates.append(CandidateEntry(_round_to_step(b20, price_step), stop=stop, target=target, tag="Bollinger +2.0 Sigma Upper Band"))
+            b25 = mean + 2.5 * std
+            if b25 > cur + 0.05 * atr:
+                stop = mean + 3.8 * std
+                target = mean + 0.5 * std
+                candidates.append(CandidateEntry(_round_to_step(b25, price_step), stop=stop, target=target, tag="Bollinger +2.5 Sigma Extreme Overbought"))
+            b15 = mean + 1.5 * std
+            if b15 > cur + 0.05 * atr:
+                stop = mean + 2.5 * std
+                target = mean - 0.5 * std
+                candidates.append(CandidateEntry(_round_to_step(b15, price_step), stop=stop, target=target, tag="Bollinger +1.5 Sigma Dynamic Resistance"))
 
+        seen = set()
+        deduped = []
+        candidates.sort(key=lambda x: abs(float(x) - cur))
+        for c in candidates:
+            if float(c) not in seen and (c < cur if side == "buy" else c > cur):
+                seen.add(float(c))
+                deduped.append(c)
+        return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics, candidate_count=0)
+
+    # Dynamic Candidate Grid Search (Parameter Sweep)
+    target_n = min(int(candidate_count), 25)
+    sigmas = np.linspace(1.20, 3.20, num=target_n)
+    if side == "buy":
+        for s_val in sigmas:
+            level = mean - float(s_val) * std
+            if level < cur - 0.05 * atr:
+                stop = mean - (float(s_val) + 1.2) * std
+                target = mean
+                candidates.append(CandidateEntry(_round_to_step(level, price_step), stop=stop, target=target, tag=f"Bollinger -{s_val:.2f} Sigma Grid"))
+    else:
+        for s_val in sigmas:
+            level = mean + float(s_val) * std
+            if level > cur + 0.05 * atr:
+                stop = mean + (float(s_val) + 1.2) * std
+                target = mean
+                candidates.append(CandidateEntry(_round_to_step(level, price_step), stop=stop, target=target, tag=f"Bollinger +{s_val:.2f} Sigma Grid"))
+
+    candidates.sort(key=lambda x: abs(float(x) - cur))
     seen = set()
     deduped = []
-    candidates.sort(key=lambda x: abs(float(x) - cur))
     for c in candidates:
         if float(c) not in seen and (c < cur if side == "buy" else c > cur):
             seen.add(float(c))
             deduped.append(c)
-    return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics)
+    return deduped[:target_n] if deduped else _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count)
 
 
-def _candidate_entries_acc_ifvg(side, metrics, bars):
+def _candidate_entries_acc_ifvg(side, metrics, bars, candidate_count=0):
     """
     Accumulation + Inverse Fair Value Gap (IFVG) Strategy.
     1. Identify accumulation range (10-30 bars).
@@ -422,73 +627,114 @@ def _candidate_entries_acc_ifvg(side, metrics, bars):
     cur, atr = metrics["current_price"], metrics["atr"]
     price_step = float(metrics.get("price_step", 0.01) or 0.01)
     if not bars or len(bars) < 40:
-        return _candidate_entries_atr_swing(side, metrics)
+        return _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count)
 
     recent = bars[-min(len(bars), 80):]
     candidates = []
 
-    # Simple logic for IFVG detection
+    if candidate_count <= 0:
+        if side == "buy":
+            for i in range(2, len(recent) - 5):
+                fvg_top = float(recent[i-2]["low"])
+                fvg_bot = float(recent[i]["high"])
+                if fvg_top > fvg_bot + 0.02 * atr:
+                    broken_idx = -1
+                    for j in range(i+1, len(recent)-1):
+                        if float(recent[j]["close"]) > fvg_top and float(recent[j]["close"]) > float(recent[j]["open"]):
+                            broken_idx = j
+                            break
+
+                    if broken_idx != -1:
+                        sweep_low = min([float(b["low"]) for b in recent[max(0, i-20):broken_idx]])
+                        if sweep_low < fvg_bot:
+                            ifvg_mid = 0.5 * (fvg_top + fvg_bot)
+                            if ifvg_mid < cur - 0.05 * atr:
+                                stop = sweep_low - 0.15 * atr
+                                target = cur + max(atr, (ifvg_mid - stop) * 2.5)
+                                candidates.append(CandidateEntry(_round_to_step(ifvg_mid, price_step), stop=stop, target=target, tag="Bullish IFVG Mid Retest"))
+                                candidates.append(CandidateEntry(_round_to_step(fvg_top, price_step), stop=stop, target=target, tag="Bullish IFVG Premium Retest"))
+        else:
+            for i in range(2, len(recent) - 5):
+                fvg_bot = float(recent[i-2]["high"])
+                fvg_top = float(recent[i]["low"])
+                if fvg_top > fvg_bot + 0.02 * atr:
+                    broken_idx = -1
+                    for j in range(i+1, len(recent)-1):
+                        if float(recent[j]["close"]) < fvg_bot and float(recent[j]["close"]) < float(recent[j]["open"]):
+                            broken_idx = j
+                            break
+
+                    if broken_idx != -1:
+                        sweep_high = max([float(b["high"]) for b in recent[max(0, i-20):broken_idx]])
+                        if sweep_high > fvg_top:
+                            ifvg_mid = 0.5 * (fvg_top + fvg_bot)
+                            if ifvg_mid > cur + 0.05 * atr:
+                                stop = sweep_high + 0.15 * atr
+                                target = cur - max(atr, (stop - ifvg_mid) * 2.5)
+                                candidates.append(CandidateEntry(_round_to_step(ifvg_mid, price_step), stop=stop, target=target, tag="Bearish IFVG Mid Retest"))
+                                candidates.append(CandidateEntry(_round_to_step(fvg_bot, price_step), stop=stop, target=target, tag="Bearish IFVG Discount Retest"))
+
+        seen = set()
+        deduped = []
+        candidates.sort(key=lambda x: abs(float(x) - cur))
+        for c in candidates:
+            if float(c) not in seen and (c < cur if side == "buy" else c > cur):
+                seen.add(float(c))
+                deduped.append(c)
+        return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics, candidate_count=0)
+
+    # Dynamic Candidate Grid Search (Parameter Sweep)
+    target_n = min(int(candidate_count), 25)
     if side == "buy":
-        # Look for a Bearish FVG that was recently broken upwards (Bullish IFVG)
-        # 1. Find Bearish FVG
-        for i in range(2, len(recent) - 5): # Leave room for break and current price
+        for i in range(2, len(recent) - 5):
             fvg_top = float(recent[i-2]["low"])
             fvg_bot = float(recent[i]["high"])
-            if fvg_top > fvg_bot + 0.02 * atr: # Bearish gap exists
-                # 2. Check if a subsequent bar closed above fvg_top (Displacement)
+            if fvg_top > fvg_bot + 0.02 * atr:
                 broken_idx = -1
                 for j in range(i+1, len(recent)-1):
                     if float(recent[j]["close"]) > fvg_top and float(recent[j]["close"]) > float(recent[j]["open"]):
                         broken_idx = j
                         break
-
                 if broken_idx != -1:
-                    # It's an IFVG now!
-                    # 3. Check if we swept a low recently before the break
                     sweep_low = min([float(b["low"]) for b in recent[max(0, i-20):broken_idx]])
-
                     if sweep_low < fvg_bot:
-                        # 4. Set entry at IFVG 50% or top
-                        ifvg_mid = 0.5 * (fvg_top + fvg_bot)
-                        if ifvg_mid < cur - 0.05 * atr:
-                            stop = sweep_low - 0.15 * atr
-                            target = cur + max(atr, (ifvg_mid - stop) * 2.5)
-                            candidates.append(CandidateEntry(_round_to_step(ifvg_mid, price_step), stop=stop, target=target, tag="Bullish IFVG Mid Retest"))
-                            candidates.append(CandidateEntry(_round_to_step(fvg_top, price_step), stop=stop, target=target, tag="Bullish IFVG Premium Retest"))
+                        stop = sweep_low - 0.15 * atr
+                        for frac in [0.15, 0.35, 0.50, 0.65, 0.85, 1.0]:
+                            level = fvg_bot + (fvg_top - fvg_bot) * frac
+                            if level < cur - 0.05 * atr:
+                                target = cur + max(atr, (level - stop) * 2.5)
+                                candidates.append(CandidateEntry(_round_to_step(level, price_step), stop=stop, target=target, tag=f"Bullish IFVG {int(frac*100)}% Retest"))
     else:
-        # Look for a Bullish FVG that was recently broken downwards (Bearish IFVG)
         for i in range(2, len(recent) - 5):
             fvg_bot = float(recent[i-2]["high"])
             fvg_top = float(recent[i]["low"])
-            if fvg_top > fvg_bot + 0.02 * atr: # Bullish gap exists
+            if fvg_top > fvg_bot + 0.02 * atr:
                 broken_idx = -1
                 for j in range(i+1, len(recent)-1):
                     if float(recent[j]["close"]) < fvg_bot and float(recent[j]["close"]) < float(recent[j]["open"]):
                         broken_idx = j
                         break
-
                 if broken_idx != -1:
                     sweep_high = max([float(b["high"]) for b in recent[max(0, i-20):broken_idx]])
-
                     if sweep_high > fvg_top:
-                        ifvg_mid = 0.5 * (fvg_top + fvg_bot)
-                        if ifvg_mid > cur + 0.05 * atr:
-                            stop = sweep_high + 0.15 * atr
-                            target = cur - max(atr, (stop - ifvg_mid) * 2.5)
-                            candidates.append(CandidateEntry(_round_to_step(ifvg_mid, price_step), stop=stop, target=target, tag="Bearish IFVG Mid Retest"))
-                            candidates.append(CandidateEntry(_round_to_step(fvg_bot, price_step), stop=stop, target=target, tag="Bearish IFVG Discount Retest"))
+                        stop = sweep_high + 0.15 * atr
+                        for frac in [0.15, 0.35, 0.50, 0.65, 0.85, 1.0]:
+                            level = fvg_top - (fvg_top - fvg_bot) * frac
+                            if level > cur + 0.05 * atr:
+                                target = cur - max(atr, (stop - level) * 2.5)
+                                candidates.append(CandidateEntry(_round_to_step(level, price_step), stop=stop, target=target, tag=f"Bearish IFVG {int(frac*100)}% Retest"))
 
+    candidates.sort(key=lambda x: abs(float(x) - cur))
     seen = set()
     deduped = []
-    candidates.sort(key=lambda x: abs(float(x) - cur))
     for c in candidates:
         if float(c) not in seen and (c < cur if side == "buy" else c > cur):
             seen.add(float(c))
             deduped.append(c)
-    return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics)
+    return deduped[:target_n] if deduped else _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count)
 
 
-def _candidate_entries_sweep_sms(side, metrics, bars):
+def _candidate_entries_sweep_sms(side, metrics, bars, candidate_count=0):
     """
     Liquidity Sweep + Shift in Market Structure (SMS) + Order Block.
     1. Look for a sweep of a recent swing high/low.
@@ -498,99 +744,158 @@ def _candidate_entries_sweep_sms(side, metrics, bars):
     cur, atr = metrics["current_price"], metrics["atr"]
     price_step = float(metrics.get("price_step", 0.01) or 0.01)
     if not bars or len(bars) < 40:
-        return _candidate_entries_atr_swing(side, metrics)
+        return _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count)
 
     recent = bars[-min(len(bars), 80):]
     candidates = []
 
+    if candidate_count <= 0:
+        if side == "buy":
+            for i in range(10, len(recent) - 5):
+                if float(recent[i]["low"]) == min([float(b["low"]) for b in recent[i-5:i+6]]):
+                    swing_low = float(recent[i]["low"])
+                    sweep_idx = -1
+                    for j in range(i+6, len(recent)-2):
+                        if float(recent[j]["low"]) < swing_low:
+                            sweep_idx = j
+                            break
+
+                    if sweep_idx != -1:
+                        interim_highs = [float(b["high"]) for b in recent[i:sweep_idx]]
+                        if not interim_highs:
+                            continue
+                        interim_high = max(interim_highs)
+
+                        sms_idx = -1
+                        for k in range(sweep_idx+1, len(recent)-1):
+                            if float(recent[k]["close"]) > interim_high:
+                                sms_idx = k
+                                break
+
+                        if sms_idx != -1:
+                            ob_bot = min([float(b["low"]) for b in recent[sweep_idx:sms_idx]])
+                            ob_top = max([float(b["high"]) for b in recent[sweep_idx:sms_idx] if float(b["close"]) < float(b["open"])]) if any(float(b["close"]) < float(b["open"]) for b in recent[sweep_idx:sms_idx]) else interim_high
+                            ob_mid = 0.5 * (ob_top + ob_bot)
+
+                            if ob_top < cur - 0.05 * atr:
+                                stop = ob_bot - 0.15 * atr
+                                target = cur + max(atr, (ob_mid - stop) * 2.5)
+                                candidates.append(CandidateEntry(_round_to_step(ob_top, price_step), stop=stop, target=target, tag="OB Top Retest (Sweep+SMS)"))
+                                candidates.append(CandidateEntry(_round_to_step(ob_mid, price_step), stop=stop, target=target, tag="OB 50% Mid (Sweep+SMS)"))
+        else:
+            for i in range(10, len(recent) - 5):
+                if float(recent[i]["high"]) == max([float(b["high"]) for b in recent[i-5:i+6]]):
+                    swing_high = float(recent[i]["high"])
+                    sweep_idx = -1
+                    for j in range(i+6, len(recent)-2):
+                        if float(recent[j]["high"]) > swing_high:
+                            sweep_idx = j
+                            break
+
+                    if sweep_idx != -1:
+                        interim_lows = [float(b["low"]) for b in recent[i:sweep_idx]]
+                        if not interim_lows:
+                            continue
+                        interim_low = min(interim_lows)
+
+                        sms_idx = -1
+                        for k in range(sweep_idx+1, len(recent)-1):
+                            if float(recent[k]["close"]) < interim_low:
+                                sms_idx = k
+                                break
+
+                        if sms_idx != -1:
+                            ob_top = max([float(b["high"]) for b in recent[sweep_idx:sms_idx]])
+                            up_candles = [b for b in recent[sweep_idx:sms_idx] if float(b["close"]) > float(b["open"])]
+                            ob_bot = min([float(b["low"]) for b in up_candles]) if up_candles else interim_low
+                            ob_mid = 0.5 * (ob_top + ob_bot)
+
+                            if ob_bot > cur + 0.05 * atr:
+                                stop = ob_top + 0.15 * atr
+                                target = cur - max(atr, (stop - ob_mid) * 2.5)
+                                candidates.append(CandidateEntry(_round_to_step(ob_bot, price_step), stop=stop, target=target, tag="OB Bottom Retest (Sweep+SMS)"))
+                                candidates.append(CandidateEntry(_round_to_step(ob_mid, price_step), stop=stop, target=target, tag="OB 50% Mid (Sweep+SMS)"))
+
+        seen = set()
+        deduped = []
+        candidates.sort(key=lambda x: abs(float(x) - cur))
+        for c in candidates:
+            if float(c) not in seen and (c < cur if side == "buy" else c > cur):
+                seen.add(float(c))
+                deduped.append(c)
+        return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics, candidate_count=0)
+
+    # Dynamic Candidate Grid Search (Parameter Sweep)
+    target_n = min(int(candidate_count), 25)
     if side == "buy":
-        # 1. Sweep of swing low
         for i in range(10, len(recent) - 5):
-            # Find a local swing low
             if float(recent[i]["low"]) == min([float(b["low"]) for b in recent[i-5:i+6]]):
                 swing_low = float(recent[i]["low"])
-                # Look for a sweep of this low
                 sweep_idx = -1
                 for j in range(i+6, len(recent)-2):
                     if float(recent[j]["low"]) < swing_low:
                         sweep_idx = j
                         break
-
                 if sweep_idx != -1:
-                    # 2. Look for Shift in Market Structure (SMS) upwards
-                    # We need a swing high between the initial low and the sweep to be broken
                     interim_highs = [float(b["high"]) for b in recent[i:sweep_idx]]
                     if not interim_highs:
                         continue
                     interim_high = max(interim_highs)
-
                     sms_idx = -1
                     for k in range(sweep_idx+1, len(recent)-1):
                         if float(recent[k]["close"]) > interim_high:
                             sms_idx = k
                             break
-
                     if sms_idx != -1:
-                        # 3. Order Block: The last down candle before the SMS
                         ob_bot = min([float(b["low"]) for b in recent[sweep_idx:sms_idx]])
                         ob_top = max([float(b["high"]) for b in recent[sweep_idx:sms_idx] if float(b["close"]) < float(b["open"])]) if any(float(b["close"]) < float(b["open"]) for b in recent[sweep_idx:sms_idx]) else interim_high
-                        ob_mid = 0.5 * (ob_top + ob_bot)
-
-                        if ob_top < cur - 0.05 * atr:
-                            stop = ob_bot - 0.15 * atr
-                            target = cur + max(atr, (ob_mid - stop) * 2.5)
-                            candidates.append(CandidateEntry(_round_to_step(ob_top, price_step), stop=stop, target=target, tag="OB Top Retest (Sweep+SMS)"))
-                            candidates.append(CandidateEntry(_round_to_step(ob_mid, price_step), stop=stop, target=target, tag="OB 50% Mid (Sweep+SMS)"))
+                        stop = ob_bot - 0.15 * atr
+                        for frac in [0.0, 0.20, 0.382, 0.50, 0.618, 0.80, 1.0]:
+                            level = ob_bot + (ob_top - ob_bot) * (1.0 - frac)
+                            if level < cur - 0.05 * atr:
+                                target = cur + max(atr, (level - stop) * 2.5)
+                                candidates.append(CandidateEntry(_round_to_step(level, price_step), stop=stop, target=target, tag=f"OB Grid {int(frac*100)}% (Sweep+SMS)"))
     else:
-        # 1. Sweep of swing high
         for i in range(10, len(recent) - 5):
-            # Find a local swing high
             if float(recent[i]["high"]) == max([float(b["high"]) for b in recent[i-5:i+6]]):
                 swing_high = float(recent[i]["high"])
-                # Look for a sweep of this high
                 sweep_idx = -1
                 for j in range(i+6, len(recent)-2):
                     if float(recent[j]["high"]) > swing_high:
                         sweep_idx = j
                         break
-
                 if sweep_idx != -1:
-                    # 2. Look for Shift in Market Structure (SMS) downwards
                     interim_lows = [float(b["low"]) for b in recent[i:sweep_idx]]
                     if not interim_lows:
                         continue
                     interim_low = min(interim_lows)
-
                     sms_idx = -1
                     for k in range(sweep_idx+1, len(recent)-1):
                         if float(recent[k]["close"]) < interim_low:
                             sms_idx = k
                             break
-
                     if sms_idx != -1:
-                        # 3. Order Block: The last up candle before the SMS
                         ob_top = max([float(b["high"]) for b in recent[sweep_idx:sms_idx]])
                         up_candles = [b for b in recent[sweep_idx:sms_idx] if float(b["close"]) > float(b["open"])]
                         ob_bot = min([float(b["low"]) for b in up_candles]) if up_candles else interim_low
-                        ob_mid = 0.5 * (ob_top + ob_bot)
+                        stop = ob_top + 0.15 * atr
+                        for frac in [0.0, 0.20, 0.382, 0.50, 0.618, 0.80, 1.0]:
+                            level = ob_top - (ob_top - ob_bot) * (1.0 - frac)
+                            if level > cur + 0.05 * atr:
+                                target = cur - max(atr, (stop - level) * 2.5)
+                                candidates.append(CandidateEntry(_round_to_step(level, price_step), stop=stop, target=target, tag=f"OB Grid {int(frac*100)}% (Sweep+SMS)"))
 
-                        if ob_bot > cur + 0.05 * atr:
-                            stop = ob_top + 0.15 * atr
-                            target = cur - max(atr, (stop - ob_mid) * 2.5)
-                            candidates.append(CandidateEntry(_round_to_step(ob_bot, price_step), stop=stop, target=target, tag="OB Bottom Retest (Sweep+SMS)"))
-                            candidates.append(CandidateEntry(_round_to_step(ob_mid, price_step), stop=stop, target=target, tag="OB 50% Mid (Sweep+SMS)"))
-
+    candidates.sort(key=lambda x: abs(float(x) - cur))
     seen = set()
     deduped = []
-    candidates.sort(key=lambda x: abs(float(x) - cur))
     for c in candidates:
         if float(c) not in seen and (c < cur if side == "buy" else c > cur):
             seen.add(float(c))
             deduped.append(c)
-    return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics)
+    return deduped[:target_n] if deduped else _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count)
 
 
-def _candidate_entries_absorption(side, metrics, bars):
+def _candidate_entries_absorption(side, metrics, bars, candidate_count=0):
     """
     Liquidity Absorption + Volume Bubbles (Bookmap Proxy) Strategy.
     1. Identify Liquidity Pools (recent swing extremes).
@@ -601,7 +906,7 @@ def _candidate_entries_absorption(side, metrics, bars):
     cur, atr = metrics["current_price"], metrics["atr"]
     price_step = float(metrics.get("price_step", 0.01) or 0.01)
     if not bars or len(bars) < 30:
-        return _candidate_entries_atr_swing(side, metrics)
+        return _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count)
 
     recent = bars[-min(len(bars), 60):]
     candidates = []
@@ -610,91 +915,139 @@ def _candidate_entries_absorption(side, metrics, bars):
     vols = np.array([float(b.get("volume", b.get("tick_volume", 1.0)) or 1.0) for b in recent])
     vol_ma = np.mean(vols) if len(vols) > 0 else 1.0
 
+    if candidate_count <= 0:
+        if side == "buy":
+            for i in range(10, len(recent) - 2):
+                if float(recent[i]["low"]) == min([float(b["low"]) for b in recent[i-5:i+6]]):
+                    pool_low = float(recent[i]["low"])
+                    sweep_idx = -1
+                    for j in range(i+6, len(recent)-1):
+                        vol_j = float(recent[j].get("volume", recent[j].get("tick_volume", 1.0)) or 1.0)
+                        if float(recent[j]["low"]) < pool_low and vol_j > 1.5 * vol_ma:
+                            sweep_idx = j
+                            break
+
+                    if sweep_idx != -1:
+                        reclaim_idx = -1
+                        for k in range(sweep_idx, len(recent)):
+                            if float(recent[k]["close"]) > pool_low:
+                                reclaim_idx = k
+                                break
+
+                        if reclaim_idx != -1:
+                            entry_price = pool_low
+                            if entry_price < cur - 0.05 * atr:
+                                stop = float(recent[sweep_idx]["low"]) - 0.15 * atr
+                                target = cur + max(atr, (entry_price - stop) * 2.0)
+                                candidates.append(CandidateEntry(_round_to_step(entry_price, price_step), stop=stop, target=target, tag="Sell-Side Absorption (Reclaim)"))
+
+                                deep_entry = 0.5 * (pool_low + float(recent[sweep_idx]["low"]))
+                                if deep_entry < cur - 0.05 * atr:
+                                    stop2 = float(recent[sweep_idx]["low"]) - 0.15 * atr
+                                    target2 = cur + max(atr, (deep_entry - stop2) * 2.5)
+                                    candidates.append(CandidateEntry(_round_to_step(deep_entry, price_step), stop=stop2, target=target2, tag="Sell-Side Absorption (Deep Discount)"))
+        else:
+            for i in range(10, len(recent) - 2):
+                if float(recent[i]["high"]) == max([float(b["high"]) for b in recent[i-5:i+6]]):
+                    pool_high = float(recent[i]["high"])
+                    sweep_idx = -1
+                    for j in range(i+6, len(recent)-1):
+                        vol_j = float(recent[j].get("volume", recent[j].get("tick_volume", 1.0)) or 1.0)
+                        if float(recent[j]["high"]) > pool_high and vol_j > 1.5 * vol_ma:
+                            sweep_idx = j
+                            break
+
+                    if sweep_idx != -1:
+                        reclaim_idx = -1
+                        for k in range(sweep_idx, len(recent)):
+                            if float(recent[k]["close"]) < pool_high:
+                                reclaim_idx = k
+                                break
+
+                        if reclaim_idx != -1:
+                            entry_price = pool_high
+                            if entry_price > cur + 0.05 * atr:
+                                stop = float(recent[sweep_idx]["high"]) + 0.15 * atr
+                                target = cur - max(atr, (stop - entry_price) * 2.0)
+                                candidates.append(CandidateEntry(_round_to_step(entry_price, price_step), stop=stop, target=target, tag="Buy-Side Absorption (Reclaim)"))
+
+                                deep_entry = 0.5 * (pool_high + float(recent[sweep_idx]["high"]))
+                                if deep_entry > cur + 0.05 * atr:
+                                    stop2 = float(recent[sweep_idx]["high"]) + 0.15 * atr
+                                    target2 = cur - max(atr, (stop2 - deep_entry) * 2.5)
+                                    candidates.append(CandidateEntry(_round_to_step(deep_entry, price_step), stop=stop2, target=target2, tag="Buy-Side Absorption (Deep Premium)"))
+
+        seen = set()
+        deduped = []
+        candidates.sort(key=lambda x: abs(float(x) - cur))
+        for c in candidates:
+            if float(c) not in seen and (c < cur if side == "buy" else c > cur):
+                seen.add(float(c))
+                deduped.append(c)
+        return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics, candidate_count=0)
+
+    # Dynamic Candidate Grid Search (Parameter Sweep)
+    target_n = min(int(candidate_count), 25)
     if side == "buy":
-        # Look for Sell-Side Sweep & Absorption
         for i in range(10, len(recent) - 2):
-            # 1. Liquidity Pool: local swing low
             if float(recent[i]["low"]) == min([float(b["low"]) for b in recent[i-5:i+6]]):
                 pool_low = float(recent[i]["low"])
-
-                # 2 & 3: Sweep & Volume Bubble
                 sweep_idx = -1
                 for j in range(i+6, len(recent)-1):
                     vol_j = float(recent[j].get("volume", recent[j].get("tick_volume", 1.0)) or 1.0)
-                    if float(recent[j]["low"]) < pool_low and vol_j > 1.5 * vol_ma:
+                    if float(recent[j]["low"]) < pool_low and vol_j > 1.3 * vol_ma:
                         sweep_idx = j
                         break
-
                 if sweep_idx != -1:
-                    # 4. Absorption / Reclaim
-                    # Check if subsequent candles closed back above the pool_low
                     reclaim_idx = -1
                     for k in range(sweep_idx, len(recent)):
                         if float(recent[k]["close"]) > pool_low:
                             reclaim_idx = k
                             break
-
                     if reclaim_idx != -1:
-                        # Reclaimed! Set entry at the reclaimed pool level or the close of reclaim candle
-                        entry_price = pool_low
-                        if entry_price < cur - 0.05 * atr:
-                            stop = float(recent[sweep_idx]["low"]) - 0.15 * atr
-                            target = cur + max(atr, (entry_price - stop) * 2.0)
-                            candidates.append(CandidateEntry(_round_to_step(entry_price, price_step), stop=stop, target=target, tag="Sell-Side Absorption (Reclaim)"))
-
-                            # Alternative entry: deeper discount inside the sweep wick
-                            deep_entry = 0.5 * (pool_low + float(recent[sweep_idx]["low"]))
-                            if deep_entry < cur - 0.05 * atr:
-                                stop2 = float(recent[sweep_idx]["low"]) - 0.15 * atr
-                                target2 = cur + max(atr, (deep_entry - stop2) * 2.5)
-                                candidates.append(CandidateEntry(_round_to_step(deep_entry, price_step), stop=stop2, target=target2, tag="Sell-Side Absorption (Deep Discount)"))
+                        wick_low = float(recent[sweep_idx]["low"])
+                        stop = wick_low - 0.15 * atr
+                        for frac in [0.0, 0.25, 0.50, 0.75, 1.0]:
+                            level = pool_low - (pool_low - wick_low) * frac
+                            if level < cur - 0.05 * atr:
+                                target = cur + max(atr, (level - stop) * 2.5)
+                                candidates.append(CandidateEntry(_round_to_step(level, price_step), stop=stop, target=target, tag=f"Absorption Grid {int(frac*100)}% Reclaim"))
     else:
-        # Look for Buy-Side Sweep & Absorption
         for i in range(10, len(recent) - 2):
-            # 1. Liquidity Pool: local swing high
             if float(recent[i]["high"]) == max([float(b["high"]) for b in recent[i-5:i+6]]):
                 pool_high = float(recent[i]["high"])
-
-                # 2 & 3: Sweep & Volume Bubble
                 sweep_idx = -1
                 for j in range(i+6, len(recent)-1):
                     vol_j = float(recent[j].get("volume", recent[j].get("tick_volume", 1.0)) or 1.0)
-                    if float(recent[j]["high"]) > pool_high and vol_j > 1.5 * vol_ma:
+                    if float(recent[j]["high"]) > pool_high and vol_j > 1.3 * vol_ma:
                         sweep_idx = j
                         break
-
                 if sweep_idx != -1:
-                    # 4. Absorption / Reclaim
                     reclaim_idx = -1
                     for k in range(sweep_idx, len(recent)):
                         if float(recent[k]["close"]) < pool_high:
                             reclaim_idx = k
                             break
-
                     if reclaim_idx != -1:
-                        entry_price = pool_high
-                        if entry_price > cur + 0.05 * atr:
-                            stop = float(recent[sweep_idx]["high"]) + 0.15 * atr
-                            target = cur - max(atr, (stop - entry_price) * 2.0)
-                            candidates.append(CandidateEntry(_round_to_step(entry_price, price_step), stop=stop, target=target, tag="Buy-Side Absorption (Reclaim)"))
+                        wick_high = float(recent[sweep_idx]["high"])
+                        stop = wick_high + 0.15 * atr
+                        for frac in [0.0, 0.25, 0.50, 0.75, 1.0]:
+                            level = pool_high + (wick_high - pool_high) * frac
+                            if level > cur + 0.05 * atr:
+                                target = cur - max(atr, (stop - level) * 2.5)
+                                candidates.append(CandidateEntry(_round_to_step(level, price_step), stop=stop, target=target, tag=f"Absorption Grid {int(frac*100)}% Reclaim"))
 
-                            deep_entry = 0.5 * (pool_high + float(recent[sweep_idx]["high"]))
-                            if deep_entry > cur + 0.05 * atr:
-                                stop2 = float(recent[sweep_idx]["high"]) + 0.15 * atr
-                                target2 = cur - max(atr, (stop2 - deep_entry) * 2.5)
-                                candidates.append(CandidateEntry(_round_to_step(deep_entry, price_step), stop=stop2, target=target2, tag="Buy-Side Absorption (Deep Premium)"))
-
+    candidates.sort(key=lambda x: abs(float(x) - cur))
     seen = set()
     deduped = []
-    candidates.sort(key=lambda x: abs(float(x) - cur))
     for c in candidates:
         if float(c) not in seen and (c < cur if side == "buy" else c > cur):
             seen.add(float(c))
             deduped.append(c)
-    return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics)
+    return deduped[:target_n] if deduped else _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count)
 
 
-def _candidate_entries_footprint(side, metrics, bars):
+def _candidate_entries_footprint(side, metrics, bars, candidate_count=0):
     """
     Footprint (Order Flow) Proxy Strategy.
     Setup A: Liquidity Sweep + Absorption (Delta/Volume proxy) + Displacement.
@@ -706,7 +1059,7 @@ def _candidate_entries_footprint(side, metrics, bars):
     cur, atr = metrics["current_price"], metrics["atr"]
     price_step = float(metrics.get("price_step", 0.01) or 0.01)
     if not bars or len(bars) < 30:
-        return _candidate_entries_atr_swing(side, metrics)
+        return _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count)
 
     recent = bars[-min(len(bars), 60):]
     candidates = []
@@ -715,122 +1068,159 @@ def _candidate_entries_footprint(side, metrics, bars):
     vols = np.array([float(b.get("volume", b.get("tick_volume", 1.0)) or 1.0) for b in recent])
     vol_ma = np.mean(vols) if len(vols) > 0 else 1.0
 
+    if candidate_count <= 0:
+        if side == "buy":
+            for i in range(10, len(recent) - 1):
+                if float(recent[i]["low"]) == min([float(b["low"]) for b in recent[i-5:i+6]]):
+                    ssl = float(recent[i]["low"])
+                    for j in range(i+6, len(recent)-1):
+                        bar_j = recent[j]
+                        low_j, high_j = float(bar_j["low"]), float(bar_j["high"])
+                        open_j, close_j = float(bar_j["open"]), float(bar_j["close"])
+                        vol_j = float(bar_j.get("volume", bar_j.get("tick_volume", 1.0)) or 1.0)
+
+                        if low_j < ssl:
+                            body = abs(open_j - close_j)
+                            lower_wick = min(open_j, close_j) - low_j
+                            if vol_j > 1.2 * vol_ma and lower_wick > max(body * 1.5, 0.1 * atr):
+                                bar_next = recent[j+1]
+                                next_close = float(bar_next["close"])
+                                next_open = float(bar_next["open"])
+                                reclaimed = (close_j > ssl) or (next_close > ssl and next_close > next_open)
+                                if reclaimed:
+                                    entry_price = ssl
+                                    if entry_price < cur - 0.05 * atr:
+                                        stop = low_j - 0.15 * atr
+                                        target = cur + max(atr, (entry_price - stop) * 2.0)
+                                        candidates.append(CandidateEntry(_round_to_step(entry_price, price_step), stop=stop, target=target, tag="Footprint Bid Absorption (Reclaim)"))
+
+                                        deep_entry = 0.5 * (ssl + low_j)
+                                        if deep_entry < cur - 0.05 * atr:
+                                            stop2 = low_j - 0.15 * atr
+                                            target2 = cur + max(atr, (deep_entry - stop2) * 2.5)
+                                            candidates.append(CandidateEntry(_round_to_step(deep_entry, price_step), stop=stop2, target=target2, tag="Footprint Bid Absorption (Deep Wick)"))
+        else:
+            for i in range(10, len(recent) - 1):
+                if float(recent[i]["high"]) == max([float(b["high"]) for b in recent[i-5:i+6]]):
+                    bsl = float(recent[i]["high"])
+                    for j in range(i+6, len(recent)-1):
+                        bar_j = recent[j]
+                        low_j, high_j = float(bar_j["low"]), float(bar_j["high"])
+                        open_j, close_j = float(bar_j["open"]), float(bar_j["close"])
+                        vol_j = float(bar_j.get("volume", bar_j.get("tick_volume", 1.0)) or 1.0)
+
+                        if high_j > bsl:
+                            body = abs(open_j - close_j)
+                            upper_wick = high_j - max(open_j, close_j)
+                            if vol_j > 1.2 * vol_ma and upper_wick > max(body * 1.5, 0.1 * atr):
+                                bar_next = recent[j+1]
+                                next_close = float(bar_next["close"])
+                                next_open = float(bar_next["open"])
+                                reclaimed = (close_j < bsl) or (next_close < bsl and next_close < next_open)
+                                if reclaimed:
+                                    entry_price = bsl
+                                    if entry_price > cur + 0.05 * atr:
+                                        stop = high_j + 0.15 * atr
+                                        target = cur - max(atr, (stop - entry_price) * 2.0)
+                                        candidates.append(CandidateEntry(_round_to_step(entry_price, price_step), stop=stop, target=target, tag="Footprint Ask Absorption (Reclaim)"))
+
+                                        deep_entry = 0.5 * (bsl + high_j)
+                                        if deep_entry > cur + 0.05 * atr:
+                                            stop2 = high_j + 0.15 * atr
+                                            target2 = cur - max(atr, (stop2 - deep_entry) * 2.5)
+                                            candidates.append(CandidateEntry(_round_to_step(deep_entry, price_step), stop=stop2, target=target2, tag="Footprint Ask Absorption (Deep Wick)"))
+
+        seen = set()
+        deduped = []
+        candidates.sort(key=lambda x: abs(float(x) - cur))
+        for c in candidates:
+            if float(c) not in seen and (c < cur if side == "buy" else c > cur):
+                seen.add(float(c))
+                deduped.append(c)
+        return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics, candidate_count=0)
+
+    # Dynamic Candidate Grid Search (Parameter Sweep)
+    target_n = min(int(candidate_count), 25)
     if side == "buy":
-        # Look for Sell-Side Liquidity (SSL) Sweep + Bid Absorption
         for i in range(10, len(recent) - 1):
-            # 1. SSL: local swing low
             if float(recent[i]["low"]) == min([float(b["low"]) for b in recent[i-5:i+6]]):
                 ssl = float(recent[i]["low"])
-
-                # 2 & 3. Sweep & Absorption Proxy
                 for j in range(i+6, len(recent)-1):
                     bar_j = recent[j]
-                    low_j, high_j = float(bar_j["low"]), float(bar_j["high"])
+                    low_j = float(bar_j["low"])
                     open_j, close_j = float(bar_j["open"]), float(bar_j["close"])
                     vol_j = float(bar_j.get("volume", bar_j.get("tick_volume", 1.0)) or 1.0)
-
                     if low_j < ssl:
-                        # Calculate body and lower wick
                         body = abs(open_j - close_j)
                         lower_wick = min(open_j, close_j) - low_j
-
-                        # Absorption Criteria:
-                        # High volume (Aggressive Sellers) + Long lower wick relative to body (Passive Bid Absorption)
-                        if vol_j > 1.2 * vol_ma and lower_wick > max(body * 1.5, 0.1 * atr):
-                            # 4. Displacement / Reclaim
-                            # Check if the close of this candle or the next is above the SSL
+                        if vol_j > 1.1 * vol_ma and lower_wick > max(body * 1.2, 0.08 * atr):
                             bar_next = recent[j+1]
                             next_close = float(bar_next["close"])
                             next_open = float(bar_next["open"])
-
                             reclaimed = (close_j > ssl) or (next_close > ssl and next_close > next_open)
-
                             if reclaimed:
-                                entry_price = ssl
-                                if entry_price < cur - 0.05 * atr:
-                                    stop = low_j - 0.15 * atr
-                                    target = cur + max(atr, (entry_price - stop) * 2.0)
-                                    candidates.append(CandidateEntry(_round_to_step(entry_price, price_step), stop=stop, target=target, tag="Footprint Bid Absorption (Reclaim)"))
-
-                                    # Deeper entry inside the wick (where the absorption happened)
-                                    deep_entry = 0.5 * (ssl + low_j)
-                                    if deep_entry < cur - 0.05 * atr:
-                                        stop2 = low_j - 0.15 * atr
-                                        target2 = cur + max(atr, (deep_entry - stop2) * 2.5)
-                                        candidates.append(CandidateEntry(_round_to_step(deep_entry, price_step), stop=stop2, target=target2, tag="Footprint Bid Absorption (Deep Wick)"))
+                                stop = low_j - 0.15 * atr
+                                for frac in [0.0, 0.20, 0.40, 0.60, 0.80, 1.0]:
+                                    level = ssl - (ssl - low_j) * frac
+                                    if level < cur - 0.05 * atr:
+                                        target = cur + max(atr, (level - stop) * 2.5)
+                                        candidates.append(CandidateEntry(_round_to_step(level, price_step), stop=stop, target=target, tag=f"Footprint Bid Absorption {int(frac*100)}% Wick"))
     else:
-        # Look for Buy-Side Liquidity (BSL) Sweep + Ask Absorption
         for i in range(10, len(recent) - 1):
-            # 1. BSL: local swing high
             if float(recent[i]["high"]) == max([float(b["high"]) for b in recent[i-5:i+6]]):
                 bsl = float(recent[i]["high"])
-
-                # 2 & 3. Sweep & Absorption Proxy
                 for j in range(i+6, len(recent)-1):
                     bar_j = recent[j]
-                    low_j, high_j = float(bar_j["low"]), float(bar_j["high"])
+                    high_j = float(bar_j["high"])
                     open_j, close_j = float(bar_j["open"]), float(bar_j["close"])
                     vol_j = float(bar_j.get("volume", bar_j.get("tick_volume", 1.0)) or 1.0)
-
                     if high_j > bsl:
-                        # Calculate body and upper wick
                         body = abs(open_j - close_j)
                         upper_wick = high_j - max(open_j, close_j)
-
-                        # Absorption Criteria:
-                        # High volume (Aggressive Buyers) + Long upper wick relative to body (Passive Ask Absorption)
-                        if vol_j > 1.2 * vol_ma and upper_wick > max(body * 1.5, 0.1 * atr):
-                            # 4. Displacement / Reclaim
+                        if vol_j > 1.1 * vol_ma and upper_wick > max(body * 1.2, 0.08 * atr):
                             bar_next = recent[j+1]
                             next_close = float(bar_next["close"])
                             next_open = float(bar_next["open"])
-
                             reclaimed = (close_j < bsl) or (next_close < bsl and next_close < next_open)
-
                             if reclaimed:
-                                entry_price = bsl
-                                if entry_price > cur + 0.05 * atr:
-                                    stop = high_j + 0.15 * atr
-                                    target = cur - max(atr, (stop - entry_price) * 2.0)
-                                    candidates.append(CandidateEntry(_round_to_step(entry_price, price_step), stop=stop, target=target, tag="Footprint Ask Absorption (Reclaim)"))
+                                stop = high_j + 0.15 * atr
+                                for frac in [0.0, 0.20, 0.40, 0.60, 0.80, 1.0]:
+                                    level = bsl + (high_j - bsl) * frac
+                                    if level > cur + 0.05 * atr:
+                                        target = cur - max(atr, (stop - level) * 2.5)
+                                        candidates.append(CandidateEntry(_round_to_step(level, price_step), stop=stop, target=target, tag=f"Footprint Ask Absorption {int(frac*100)}% Wick"))
 
-                                    deep_entry = 0.5 * (bsl + high_j)
-                                    if deep_entry > cur + 0.05 * atr:
-                                        stop2 = high_j + 0.15 * atr
-                                        target2 = cur - max(atr, (stop2 - deep_entry) * 2.5)
-                                        candidates.append(CandidateEntry(_round_to_step(deep_entry, price_step), stop=stop2, target=target2, tag="Footprint Ask Absorption (Deep Wick)"))
-
+    candidates.sort(key=lambda x: abs(float(x) - cur))
     seen = set()
     deduped = []
-    candidates.sort(key=lambda x: abs(float(x) - cur))
     for c in candidates:
         if float(c) not in seen and (c < cur if side == "buy" else c > cur):
             seen.add(float(c))
             deduped.append(c)
-    return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics)
+    return deduped[:target_n] if deduped else _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count)
 
 
-def _candidate_entries(side, metrics, bars=None, strategy="atr_swing"):
+def _candidate_entries(side, metrics, bars=None, strategy="atr_swing", candidate_count=0):
     """Dispatcher to build candidate limits based on selected strategy."""
     strat = str(strategy or "atr_swing").strip().lower()
     if strat in ("poc", "breakout + poc retest", "poc_retest"):
-        return _candidate_entries_poc(side, metrics, bars or [])
+        return _candidate_entries_poc(side, metrics, bars or [], candidate_count=candidate_count)
     elif strat in ("fvg", "liquidity sweep + fvg", "sweep_fvg"):
-        return _candidate_entries_fvg(side, metrics, bars or [])
+        return _candidate_entries_fvg(side, metrics, bars or [], candidate_count=candidate_count)
     elif strat in ("orb", "session orb", "session orb (asia/london/ny)"):
-        return _candidate_entries_orb(side, metrics, bars or [])
+        return _candidate_entries_orb(side, metrics, bars or [], candidate_count=candidate_count)
     elif strat in ("zscore", "bollinger extremes (z-score)", "bollinger", "mean_reversion"):
-        return _candidate_entries_zscore(side, metrics, bars or [])
+        return _candidate_entries_zscore(side, metrics, bars or [], candidate_count=candidate_count)
     elif strat in ("acc_ifvg", "accumulation + ifvg", "ifvg"):
-        return _candidate_entries_acc_ifvg(side, metrics, bars or [])
+        return _candidate_entries_acc_ifvg(side, metrics, bars or [], candidate_count=candidate_count)
     elif strat in ("sweep_sms", "sweep + sms", "sms"):
-        return _candidate_entries_sweep_sms(side, metrics, bars or [])
+        return _candidate_entries_sweep_sms(side, metrics, bars or [], candidate_count=candidate_count)
     elif strat in ("absorption", "heatmap", "bubbles", "liquidity_absorption"):
-        return _candidate_entries_absorption(side, metrics, bars or [])
+        return _candidate_entries_absorption(side, metrics, bars or [], candidate_count=candidate_count)
     elif strat in ("footprint", "orderflow", "delta_absorption"):
-        return _candidate_entries_footprint(side, metrics, bars or [])
+        return _candidate_entries_footprint(side, metrics, bars or [], candidate_count=candidate_count)
     else:
-        return _candidate_entries_atr_swing(side, metrics)
+        return _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count)
 
 
 
@@ -1144,9 +1534,9 @@ def _rank_score(result, touch_stats):
 
 def _scan_side(side, metrics, bars_data, horizon_bars, search_replays, spread,
                seed, projection_mode, tie_break, seasonality, engine_mode,
-               tpsl_config, strategy="atr_swing"):
+               tpsl_config, strategy="atr_swing", candidate_count=0):
     interval = int(bars_data.get("interval_minutes", 5) or 5)
-    entries = _candidate_entries(side, metrics, bars=bars_data.get("bars", []), strategy=strategy)
+    entries = _candidate_entries(side, metrics, bars=bars_data.get("bars", []), strategy=strategy, candidate_count=candidate_count)
     plans = _build_candidate_plans(side, entries, metrics, interval, tpsl_config)
     candidates = []
     for index, plan in enumerate(plans):
@@ -1233,7 +1623,8 @@ def find_dual_recommendations(
     tp_min_points=1000, tp_max_points=5000, tp_step_points=500,
     sl_min_points=500, sl_max_points=2000, sl_step_points=250,
     rr_ratio=2.0, rr_sl_points=1000,
-    strategy="atr_swing"
+    strategy="atr_swing",
+    candidate_count=0
 ):
     """
     Search and rank BUY LIMIT and SELL LIMIT candidates.
@@ -1323,12 +1714,12 @@ def find_dual_recommendations(
     buy_selected, buy_count = _scan_side(
         "buy", metrics, normalized, horizon_bars, search_replays, spread, seed,
         projection_mode, tie_break, seasonality, primary_mode, tpsl_config,
-        strategy=normalized_strategy
+        strategy=normalized_strategy, candidate_count=candidate_count
     )
     sell_selected, sell_count = _scan_side(
         "sell", metrics, normalized, horizon_bars, search_replays, spread, seed + 1000,
         projection_mode, tie_break, seasonality, primary_mode, tpsl_config,
-        strategy=normalized_strategy
+        strategy=normalized_strategy, candidate_count=candidate_count
     )
     buy_res = _finalize_recommendation(
         "buy", buy_selected, buy_count, normalized, metrics, horizon_bars,
@@ -1394,6 +1785,7 @@ def find_dual_recommendations(
         "search": {
             "strategy": strategy_label,
             "method": f"{strategy_label} candidate grid",
+            "candidate_count_requested": candidate_count,
             "buy_candidates_scanned": buy_count,
             "sell_candidates_scanned": sell_count,
             "search_replays_per_candidate": search_replays,
