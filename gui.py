@@ -439,8 +439,8 @@ class TimeMachineProGUI:
         f_rep = tk.Frame(sub_row, bg=PANEL_BG)
         f_rep.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
         tk.Label(f_rep, text="Replays", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w")
-        self.replays_var = tk.StringVar(value="5,000")
-        ttk.Combobox(f_rep, textvariable=self.replays_var, values=["3,000", "5,000", "10,000"], state="readonly", font=("Segoe UI", 9)).pack(fill=tk.X)
+        self.replays_var = tk.StringVar(value="3,000")
+        ttk.Combobox(f_rep, textvariable=self.replays_var, values=["100", "250", "500", "1,000", "3,000", "5,000", "10,000"], state="readonly", font=("Segoe UI", 9)).pack(fill=tk.X)
 
         f_spr = tk.Frame(sub_row, bg=PANEL_BG)
         f_spr.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(4, 0))
@@ -562,6 +562,16 @@ class TimeMachineProGUI:
             font=("Segoe UI", 7), fg=TEXT_MUTED, bg=CARD_BG, wraplength=280, justify=tk.LEFT
         )
         self.strategy_desc_label.pack(anchor="w")
+
+        # Grid Size Configuration
+        tk.Label(strat_card, text="Candidate Grid (Variations)", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w", pady=(8, 1))
+        self.candidate_grid_var = tk.StringVar(value="0 (Legacy)")
+        self.candidate_grid_combo = ttk.Combobox(
+            strat_card, textvariable=self.candidate_grid_var,
+            values=["0 (Legacy)", "5", "10", "25", "50", "100", "500", "1000"],
+            font=("Segoe UI", 8)
+        )
+        self.candidate_grid_combo.pack(fill=tk.X)
 
         # Dual Auto TP/SL search configuration (hidden in Manual mode).
         tpsl_card = tk.Frame(self.auto_sidebar_frame, bg=CARD_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
@@ -1143,6 +1153,12 @@ class TimeMachineProGUI:
             "Liquidity Absorption + Volume Bubbles": "absorption",
             "Order Flow Footprint Proxy": "footprint"
         }.get(self.strategy_var.get(), "atr_swing")
+
+        try:
+            candidate_count = int(self.candidate_grid_var.get().split()[0])
+        except (ValueError, AttributeError):
+            candidate_count = 0
+
         try:
             tpsl_params = self._get_tpsl_scan_params()
         except (TypeError, ValueError) as exc:
@@ -1164,6 +1180,7 @@ class TimeMachineProGUI:
                     seasonality=season_mode,
                     engine_mode=engine_mode,
                     strategy=strategy_code,
+                    candidate_count=candidate_count,
                     **tpsl_params
                 )
                 self.root.after(0, lambda r=res: self._apply_dual_results(r))
@@ -1785,6 +1802,7 @@ class TimeMachineProGUI:
             "engine_mode": self.engine_mode_var.get(),
             "grid_lines": self.grid_lines_var.get(),
             "strategy": self.strategy_var.get(),
+            "candidate_grid": self.candidate_grid_var.get(),
             "tpsl_mode": self.tpsl_mode_var.get(),
             "point_size": self.point_size_var.get(),
             "point_size_custom": self._point_size_custom,
@@ -1856,6 +1874,10 @@ class TimeMachineProGUI:
             if saved_strat in self.strategy_combo["values"]:
                 self.strategy_var.set(saved_strat)
                 self._on_strategy_change()
+
+            saved_candidate_grid = settings.get("candidate_grid")
+            if saved_candidate_grid:
+                self.candidate_grid_var.set(saved_candidate_grid)
 
             # Restore TP/SL search mode and broker point conversion.
             saved_tpsl_mode = settings.get("tpsl_mode", "Auto Optimize")
