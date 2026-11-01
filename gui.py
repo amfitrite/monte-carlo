@@ -426,54 +426,78 @@ class TimeMachineProGUI:
         )
         self.spread_entry.pack(fill=tk.X, ipady=2)
 
-        # Section 2B: Statistical Methodology Options (User Selectable)
+        # Section 2B: Statistical Methodology Options (User Selectable & Collapsible)
         method_card = tk.Frame(parent, bg=CARD_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
         method_card.pack(fill=tk.X, pady=(0, 10))
 
-        tk.Label(method_card, text="⚙️ ENGINE SELECTION", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=CARD_BG).pack(anchor="w")
+        # Collapsible header
+        method_header = tk.Frame(method_card, bg=CARD_BG)
+        method_header.pack(fill=tk.X)
+        self.method_toggle_btn = tk.Label(
+            method_header, text="⚙️ ADVANCED SETTINGS ▶", font=("Segoe UI", 8, "bold"),
+            fg=GOLD, bg=CARD_BG, cursor="hand2"
+        )
+        self.method_toggle_btn.pack(side=tk.LEFT)
+
+        self.method_body = tk.Frame(method_card, bg=CARD_BG)
+        # Hidden by default so DUAL AUTO TP/SL card is immediately visible!
+
+        def _toggle_method_card(event=None):
+            if self.method_body.winfo_ismapped():
+                self.method_body.pack_forget()
+                self.method_toggle_btn.configure(text="⚙️ ADVANCED SETTINGS ▶")
+            else:
+                self.method_body.pack(fill=tk.X, pady=(6, 0))
+                self.method_toggle_btn.configure(text="⚙️ ADVANCED SETTINGS ▼")
+            if hasattr(self, "_sidebar_canvas"):
+                self.root.after(10, lambda: self._sidebar_canvas.configure(scrollregion=self._sidebar_canvas.bbox("all")))
+
+        self.method_toggle_btn.bind("<Button-1>", _toggle_method_card)
+        method_header.bind("<Button-1>", _toggle_method_card)
+
+        tk.Label(self.method_body, text="ENGINE SELECTION", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w")
         self.engine_mode_var = tk.StringVar(value="Legacy V1 (Default)")
         self.engine_mode_combo = ttk.Combobox(
-            method_card, textvariable=self.engine_mode_var,
+            self.method_body, textvariable=self.engine_mode_var,
             values=["Legacy V1 (Default)", "Enhanced OHLC V2", "Compare V1 vs V2"],
             state="readonly", font=("Segoe UI", 8)
         )
-        self.engine_mode_combo.pack(fill=tk.X, pady=(4, 6))
-        tk.Label(method_card, text="V2 uses block bootstrap + conservative same-bar collision handling. Compare mode keeps V1 as the displayed baseline.", font=("Segoe UI", 7), fg=TEXT_MUTED, bg=CARD_BG, wraplength=280, justify=tk.LEFT).pack(anchor="w", pady=(0, 5))
+        self.engine_mode_combo.pack(fill=tk.X, pady=(2, 6))
+        tk.Label(self.method_body, text="V2 uses block bootstrap + conservative collision handling.", font=("Segoe UI", 7), fg=TEXT_MUTED, bg=CARD_BG, wraplength=280, justify=tk.LEFT).pack(anchor="w", pady=(0, 5))
 
-        tk.Label(method_card, text="⚙️ LEGACY V1 METHODOLOGY OPTIONS", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=CARD_BG).pack(anchor="w")
+        tk.Label(self.method_body, text="LEGACY V1 METHODOLOGY", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w")
 
-        tk.Label(method_card, text="Fan Chart Projection", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w", pady=(4, 1))
+        tk.Label(self.method_body, text="Fan Chart Projection", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w", pady=(4, 1))
         self.proj_mode_var = tk.StringVar(value="Two-Stream Free Drift (Recommended)")
         self.proj_combo = ttk.Combobox(
-            method_card, textvariable=self.proj_mode_var,
+            self.method_body, textvariable=self.proj_mode_var,
             values=list(PROJECTION_MODES.keys()), state="readonly", font=("Segoe UI", 8)
         )
         self.proj_combo.pack(fill=tk.X)
         self.proj_combo.bind("<<ComboboxSelected>>", lambda e: self._on_methodology_change())
 
-        tk.Label(method_card, text="Collision Tie-Break", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w", pady=(4, 1))
+        tk.Label(self.method_body, text="Collision Tie-Break", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w", pady=(4, 1))
         self.tie_break_var = tk.StringVar(value="Smart Candle Anatomy (Recommended)")
         self.tb_combo = ttk.Combobox(
-            method_card, textvariable=self.tie_break_var,
+            self.method_body, textvariable=self.tie_break_var,
             values=list(TIE_BREAK_MODES.keys()), state="readonly", font=("Segoe UI", 8)
         )
         self.tb_combo.pack(fill=tk.X)
         self.tb_combo.bind("<<ComboboxSelected>>", lambda e: self._on_methodology_change())
 
-        tk.Label(method_card, text="Seasonality Filter", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w", pady=(4, 1))
+        tk.Label(self.method_body, text="Seasonality Filter", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w", pady=(4, 1))
         self.seasonality_var = tk.StringVar(value="Off (Default/Asli)")
         self.seasonality_combo = ttk.Combobox(
-            method_card, textvariable=self.seasonality_var,
+            self.method_body, textvariable=self.seasonality_var,
             values=list(SEASONALITY_MODES.keys()), state="readonly", font=("Segoe UI", 8), cursor="hand2"
         )
         self.seasonality_combo.pack(fill=tk.X)
         self.seasonality_combo.bind("<<ComboboxSelected>>", lambda e: self._on_methodology_change())
 
-        tk.Label(method_card, text="⚙️ DISPLAY SETTINGS", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=CARD_BG).pack(anchor="w", pady=(10, 0))
-        tk.Label(method_card, text="Price Grid Lines", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w", pady=(4, 1))
+        tk.Label(self.method_body, text="Price Grid Lines", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w", pady=(4, 1))
         self.grid_lines_var = tk.StringVar(value="25 Lines (Default)")
         self.grid_lines_combo = ttk.Combobox(
-            method_card, textvariable=self.grid_lines_var,
+            self.method_body, textvariable=self.grid_lines_var,
             values=["25 Lines (Default)", "50 Lines"], state="readonly", font=("Segoe UI", 8), cursor="hand2"
         )
         self.grid_lines_combo.pack(fill=tk.X)
@@ -887,13 +911,25 @@ class TimeMachineProGUI:
             self.root.after(0, lambda: self.price_badge.configure(text=f"Sync: {e}"))
 
     def _sync_point_size_from_data(self):
-        if self._point_size_custom or not isinstance(self.bars_data, dict):
+        if not isinstance(self.bars_data, dict):
             return
         value = self.bars_data.get("point_size")
         try:
             point_size = float(value)
             if point_size > 0:
-                self.root.after(0, lambda value=point_size: self.point_size_var.set(format(value, ".10g")))
+                # If custom point size produces an invalid/extreme price jump (> 50% of market price),
+                # or if point_size is not custom, auto-reset to broker's valid point size.
+                current_p = self.current_market_price or 3875.0
+                try:
+                    cur_val = float(self.point_size_var.get().strip())
+                except Exception:
+                    cur_val = 0.0
+
+                if not self._point_size_custom or cur_val <= 0 or (cur_val * 1000 > current_p):
+                    self._point_size_custom = False
+                    val_str = format(point_size, ".10g")
+                    self.point_size_var.set(val_str)
+                    self.root.after(0, lambda v=val_str: self.point_size_var.set(v))
         except (TypeError, ValueError):
             pass
 
@@ -953,13 +989,18 @@ class TimeMachineProGUI:
                     engine_mode=engine_mode,
                     **tpsl_params
                 )
-                self.root.after(0, lambda: self._apply_dual_results(res))
+                self.root.after(0, lambda r=res: self._apply_dual_results(r))
             except Exception as e:
-                self.root.after(0, lambda: self.dual_summary_title.configure(text=f"Scan Error: {e}", fg=RED))
+                err_msg = str(e)
+                self.root.after(0, lambda msg=err_msg: self._show_scan_error(msg))
             finally:
                 self.root.after(0, lambda: self.btn_run_auto.configure(state=tk.NORMAL, text="⚡ SCAN DUAL SETUPS"))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _show_scan_error(self, err_msg):
+        self.dual_summary_title.configure(text="⚠️ Scan Error", fg=RED)
+        self.dual_summary_desc.configure(text=f"Gagal melakukan simulasi: {err_msg}")
 
 
     def _apply_dual_results(self, res):
