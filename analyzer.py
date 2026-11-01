@@ -590,6 +590,110 @@ def _candidate_entries_sweep_sms(side, metrics, bars):
     return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics)
 
 
+def _candidate_entries_absorption(side, metrics, bars):
+    """
+    Liquidity Absorption + Volume Bubbles (Bookmap Proxy) Strategy.
+    1. Identify Liquidity Pools (recent swing extremes).
+    2. Detect Liquidity Sweep (price penetrates the pool).
+    3. Volume Bubble Proxy: The sweep candle has high relative volume.
+    4. Absorption/Reclaim: Price fails to hold the breakout and reclaims the level.
+    """
+    cur, atr = metrics["current_price"], metrics["atr"]
+    price_step = float(metrics.get("price_step", 0.01) or 0.01)
+    if not bars or len(bars) < 30:
+        return _candidate_entries_atr_swing(side, metrics)
+
+    recent = bars[-min(len(bars), 60):]
+    candidates = []
+
+    # Calculate volume moving average for "Bubble" detection
+    vols = np.array([float(b.get("volume", b.get("tick_volume", 1.0)) or 1.0) for b in recent])
+    vol_ma = np.mean(vols) if len(vols) > 0 else 1.0
+
+    if side == "buy":
+        # Look for Sell-Side Sweep & Absorption
+        for i in range(10, len(recent) - 2):
+            # 1. Liquidity Pool: local swing low
+            if float(recent[i]["low"]) == min([float(b["low"]) for b in recent[i-5:i+6]]):
+                pool_low = float(recent[i]["low"])
+
+                # 2 & 3: Sweep & Volume Bubble
+                sweep_idx = -1
+                for j in range(i+6, len(recent)-1):
+                    vol_j = float(recent[j].get("volume", recent[j].get("tick_volume", 1.0)) or 1.0)
+                    if float(recent[j]["low"]) < pool_low and vol_j > 1.5 * vol_ma:
+                        sweep_idx = j
+                        break
+
+                if sweep_idx != -1:
+                    # 4. Absorption / Reclaim
+                    # Check if subsequent candles closed back above the pool_low
+                    reclaim_idx = -1
+                    for k in range(sweep_idx, len(recent)):
+                        if float(recent[k]["close"]) > pool_low:
+                            reclaim_idx = k
+                            break
+
+                    if reclaim_idx != -1:
+                        # Reclaimed! Set entry at the reclaimed pool level or the close of reclaim candle
+                        entry_price = pool_low
+                        if entry_price < cur - 0.05 * atr:
+                            stop = float(recent[sweep_idx]["low"]) - 0.15 * atr
+                            target = cur + max(atr, (entry_price - stop) * 2.0)
+                            candidates.append(CandidateEntry(_round_to_step(entry_price, price_step), stop=stop, target=target, tag="Sell-Side Absorption (Reclaim)"))
+
+                            # Alternative entry: deeper discount inside the sweep wick
+                            deep_entry = 0.5 * (pool_low + float(recent[sweep_idx]["low"]))
+                            if deep_entry < cur - 0.05 * atr:
+                                stop2 = float(recent[sweep_idx]["low"]) - 0.15 * atr
+                                target2 = cur + max(atr, (deep_entry - stop2) * 2.5)
+                                candidates.append(CandidateEntry(_round_to_step(deep_entry, price_step), stop=stop2, target=target2, tag="Sell-Side Absorption (Deep Discount)"))
+    else:
+        # Look for Buy-Side Sweep & Absorption
+        for i in range(10, len(recent) - 2):
+            # 1. Liquidity Pool: local swing high
+            if float(recent[i]["high"]) == max([float(b["high"]) for b in recent[i-5:i+6]]):
+                pool_high = float(recent[i]["high"])
+
+                # 2 & 3: Sweep & Volume Bubble
+                sweep_idx = -1
+                for j in range(i+6, len(recent)-1):
+                    vol_j = float(recent[j].get("volume", recent[j].get("tick_volume", 1.0)) or 1.0)
+                    if float(recent[j]["high"]) > pool_high and vol_j > 1.5 * vol_ma:
+                        sweep_idx = j
+                        break
+
+                if sweep_idx != -1:
+                    # 4. Absorption / Reclaim
+                    reclaim_idx = -1
+                    for k in range(sweep_idx, len(recent)):
+                        if float(recent[k]["close"]) < pool_high:
+                            reclaim_idx = k
+                            break
+
+                    if reclaim_idx != -1:
+                        entry_price = pool_high
+                        if entry_price > cur + 0.05 * atr:
+                            stop = float(recent[sweep_idx]["high"]) + 0.15 * atr
+                            target = cur - max(atr, (stop - entry_price) * 2.0)
+                            candidates.append(CandidateEntry(_round_to_step(entry_price, price_step), stop=stop, target=target, tag="Buy-Side Absorption (Reclaim)"))
+
+                            deep_entry = 0.5 * (pool_high + float(recent[sweep_idx]["high"]))
+                            if deep_entry > cur + 0.05 * atr:
+                                stop2 = float(recent[sweep_idx]["high"]) + 0.15 * atr
+                                target2 = cur - max(atr, (stop2 - deep_entry) * 2.5)
+                                candidates.append(CandidateEntry(_round_to_step(deep_entry, price_step), stop=stop2, target=target2, tag="Buy-Side Absorption (Deep Premium)"))
+
+    seen = set()
+    deduped = []
+    candidates.sort(key=lambda x: abs(float(x) - cur))
+    for c in candidates:
+        if float(c) not in seen and (c < cur if side == "buy" else c > cur):
+            seen.add(float(c))
+            deduped.append(c)
+    return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics)
+
+
 def _candidate_entries(side, metrics, bars=None, strategy="atr_swing"):
     """Dispatcher to build candidate limits based on selected strategy."""
     strat = str(strategy or "atr_swing").strip().lower()
@@ -605,6 +709,8 @@ def _candidate_entries(side, metrics, bars=None, strategy="atr_swing"):
         return _candidate_entries_acc_ifvg(side, metrics, bars or [])
     elif strat in ("sweep_sms", "sweep + sms", "sms"):
         return _candidate_entries_sweep_sms(side, metrics, bars or [])
+    elif strat in ("absorption", "heatmap", "bubbles", "liquidity_absorption"):
+        return _candidate_entries_absorption(side, metrics, bars or [])
     else:
         return _candidate_entries_atr_swing(side, metrics)
 
@@ -1068,7 +1174,11 @@ def find_dual_recommendations(
         "ifvg": "acc_ifvg",
         "sweep_sms": "sweep_sms",
         "sweep + sms": "sweep_sms",
-        "sms": "sweep_sms"
+        "sms": "sweep_sms",
+        "absorption": "absorption",
+        "heatmap": "absorption",
+        "bubbles": "absorption",
+        "liquidity_absorption": "absorption"
     }
     normalized_strategy = strategy_map.get(strat_key, "atr_swing")
     strategy_labels = {
@@ -1078,7 +1188,8 @@ def find_dual_recommendations(
         "orb": "Session Open Range Breakout (ORB)",
         "zscore": "Bollinger Bands Extremes (Z-Score)",
         "acc_ifvg": "Accumulation + Inverse FVG (IFVG)",
-        "sweep_sms": "Liquidity Sweep + Market Structure Shift (SMS)"
+        "sweep_sms": "Liquidity Sweep + Market Structure Shift (SMS)",
+        "absorption": "Liquidity Absorption + Volume Bubbles"
     }
     strategy_label = strategy_labels.get(normalized_strategy, "ATR Pullback & Swing Structure")
 
