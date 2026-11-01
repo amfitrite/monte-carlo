@@ -411,6 +411,185 @@ def _candidate_entries_zscore(side, metrics, bars):
     return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics)
 
 
+def _candidate_entries_acc_ifvg(side, metrics, bars):
+    """
+    Accumulation + Inverse Fair Value Gap (IFVG) Strategy.
+    1. Identify accumulation range (10-30 bars).
+    2. Liquidity Sweep (price breaks range and rejects).
+    3. Inverse FVG: A prior FVG is breached by strong displacement.
+    4. Entry on retest of the IFVG.
+    """
+    cur, atr = metrics["current_price"], metrics["atr"]
+    price_step = float(metrics.get("price_step", 0.01) or 0.01)
+    if not bars or len(bars) < 40:
+        return _candidate_entries_atr_swing(side, metrics)
+
+    recent = bars[-min(len(bars), 80):]
+    candidates = []
+
+    # Simple logic for IFVG detection
+    if side == "buy":
+        # Look for a Bearish FVG that was recently broken upwards (Bullish IFVG)
+        # 1. Find Bearish FVG
+        for i in range(2, len(recent) - 5): # Leave room for break and current price
+            fvg_top = float(recent[i-2]["low"])
+            fvg_bot = float(recent[i]["high"])
+            if fvg_top > fvg_bot + 0.02 * atr: # Bearish gap exists
+                # 2. Check if a subsequent bar closed above fvg_top (Displacement)
+                broken_idx = -1
+                for j in range(i+1, len(recent)-1):
+                    if float(recent[j]["close"]) > fvg_top and float(recent[j]["close"]) > float(recent[j]["open"]):
+                        broken_idx = j
+                        break
+
+                if broken_idx != -1:
+                    # It's an IFVG now!
+                    # 3. Check if we swept a low recently before the break
+                    sweep_low = min([float(b["low"]) for b in recent[max(0, i-20):broken_idx]])
+
+                    if sweep_low < fvg_bot:
+                        # 4. Set entry at IFVG 50% or top
+                        ifvg_mid = 0.5 * (fvg_top + fvg_bot)
+                        if ifvg_mid < cur - 0.05 * atr:
+                            stop = sweep_low - 0.15 * atr
+                            target = cur + max(atr, (ifvg_mid - stop) * 2.5)
+                            candidates.append(CandidateEntry(_round_to_step(ifvg_mid, price_step), stop=stop, target=target, tag="Bullish IFVG Mid Retest"))
+                            candidates.append(CandidateEntry(_round_to_step(fvg_top, price_step), stop=stop, target=target, tag="Bullish IFVG Premium Retest"))
+    else:
+        # Look for a Bullish FVG that was recently broken downwards (Bearish IFVG)
+        for i in range(2, len(recent) - 5):
+            fvg_bot = float(recent[i-2]["high"])
+            fvg_top = float(recent[i]["low"])
+            if fvg_top > fvg_bot + 0.02 * atr: # Bullish gap exists
+                broken_idx = -1
+                for j in range(i+1, len(recent)-1):
+                    if float(recent[j]["close"]) < fvg_bot and float(recent[j]["close"]) < float(recent[j]["open"]):
+                        broken_idx = j
+                        break
+
+                if broken_idx != -1:
+                    sweep_high = max([float(b["high"]) for b in recent[max(0, i-20):broken_idx]])
+
+                    if sweep_high > fvg_top:
+                        ifvg_mid = 0.5 * (fvg_top + fvg_bot)
+                        if ifvg_mid > cur + 0.05 * atr:
+                            stop = sweep_high + 0.15 * atr
+                            target = cur - max(atr, (stop - ifvg_mid) * 2.5)
+                            candidates.append(CandidateEntry(_round_to_step(ifvg_mid, price_step), stop=stop, target=target, tag="Bearish IFVG Mid Retest"))
+                            candidates.append(CandidateEntry(_round_to_step(fvg_bot, price_step), stop=stop, target=target, tag="Bearish IFVG Discount Retest"))
+
+    seen = set()
+    deduped = []
+    candidates.sort(key=lambda x: abs(float(x) - cur))
+    for c in candidates:
+        if float(c) not in seen and (c < cur if side == "buy" else c > cur):
+            seen.add(float(c))
+            deduped.append(c)
+    return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics)
+
+
+def _candidate_entries_sweep_sms(side, metrics, bars):
+    """
+    Liquidity Sweep + Shift in Market Structure (SMS) + Order Block.
+    1. Look for a sweep of a recent swing high/low.
+    2. Look for a strong break of structure in the opposite direction.
+    3. Entry is on the unmitigated Order Block (OB) left behind.
+    """
+    cur, atr = metrics["current_price"], metrics["atr"]
+    price_step = float(metrics.get("price_step", 0.01) or 0.01)
+    if not bars or len(bars) < 40:
+        return _candidate_entries_atr_swing(side, metrics)
+
+    recent = bars[-min(len(bars), 80):]
+    candidates = []
+
+    if side == "buy":
+        # 1. Sweep of swing low
+        for i in range(10, len(recent) - 5):
+            # Find a local swing low
+            if float(recent[i]["low"]) == min([float(b["low"]) for b in recent[i-5:i+6]]):
+                swing_low = float(recent[i]["low"])
+                # Look for a sweep of this low
+                sweep_idx = -1
+                for j in range(i+6, len(recent)-2):
+                    if float(recent[j]["low"]) < swing_low:
+                        sweep_idx = j
+                        break
+
+                if sweep_idx != -1:
+                    # 2. Look for Shift in Market Structure (SMS) upwards
+                    # We need a swing high between the initial low and the sweep to be broken
+                    interim_highs = [float(b["high"]) for b in recent[i:sweep_idx]]
+                    if not interim_highs:
+                        continue
+                    interim_high = max(interim_highs)
+
+                    sms_idx = -1
+                    for k in range(sweep_idx+1, len(recent)-1):
+                        if float(recent[k]["close"]) > interim_high:
+                            sms_idx = k
+                            break
+
+                    if sms_idx != -1:
+                        # 3. Order Block: The last down candle before the SMS
+                        ob_bot = min([float(b["low"]) for b in recent[sweep_idx:sms_idx]])
+                        ob_top = max([float(b["high"]) for b in recent[sweep_idx:sms_idx] if float(b["close"]) < float(b["open"])]) if any(float(b["close"]) < float(b["open"]) for b in recent[sweep_idx:sms_idx]) else interim_high
+                        ob_mid = 0.5 * (ob_top + ob_bot)
+
+                        if ob_top < cur - 0.05 * atr:
+                            stop = ob_bot - 0.15 * atr
+                            target = cur + max(atr, (ob_mid - stop) * 2.5)
+                            candidates.append(CandidateEntry(_round_to_step(ob_top, price_step), stop=stop, target=target, tag="OB Top Retest (Sweep+SMS)"))
+                            candidates.append(CandidateEntry(_round_to_step(ob_mid, price_step), stop=stop, target=target, tag="OB 50% Mid (Sweep+SMS)"))
+    else:
+        # 1. Sweep of swing high
+        for i in range(10, len(recent) - 5):
+            # Find a local swing high
+            if float(recent[i]["high"]) == max([float(b["high"]) for b in recent[i-5:i+6]]):
+                swing_high = float(recent[i]["high"])
+                # Look for a sweep of this high
+                sweep_idx = -1
+                for j in range(i+6, len(recent)-2):
+                    if float(recent[j]["high"]) > swing_high:
+                        sweep_idx = j
+                        break
+
+                if sweep_idx != -1:
+                    # 2. Look for Shift in Market Structure (SMS) downwards
+                    interim_lows = [float(b["low"]) for b in recent[i:sweep_idx]]
+                    if not interim_lows:
+                        continue
+                    interim_low = min(interim_lows)
+
+                    sms_idx = -1
+                    for k in range(sweep_idx+1, len(recent)-1):
+                        if float(recent[k]["close"]) < interim_low:
+                            sms_idx = k
+                            break
+
+                    if sms_idx != -1:
+                        # 3. Order Block: The last up candle before the SMS
+                        ob_top = max([float(b["high"]) for b in recent[sweep_idx:sms_idx]])
+                        up_candles = [b for b in recent[sweep_idx:sms_idx] if float(b["close"]) > float(b["open"])]
+                        ob_bot = min([float(b["low"]) for b in up_candles]) if up_candles else interim_low
+                        ob_mid = 0.5 * (ob_top + ob_bot)
+
+                        if ob_bot > cur + 0.05 * atr:
+                            stop = ob_top + 0.15 * atr
+                            target = cur - max(atr, (stop - ob_mid) * 2.5)
+                            candidates.append(CandidateEntry(_round_to_step(ob_bot, price_step), stop=stop, target=target, tag="OB Bottom Retest (Sweep+SMS)"))
+                            candidates.append(CandidateEntry(_round_to_step(ob_mid, price_step), stop=stop, target=target, tag="OB 50% Mid (Sweep+SMS)"))
+
+    seen = set()
+    deduped = []
+    candidates.sort(key=lambda x: abs(float(x) - cur))
+    for c in candidates:
+        if float(c) not in seen and (c < cur if side == "buy" else c > cur):
+            seen.add(float(c))
+            deduped.append(c)
+    return deduped[:5] if deduped else _candidate_entries_atr_swing(side, metrics)
+
+
 def _candidate_entries(side, metrics, bars=None, strategy="atr_swing"):
     """Dispatcher to build candidate limits based on selected strategy."""
     strat = str(strategy or "atr_swing").strip().lower()
@@ -422,6 +601,10 @@ def _candidate_entries(side, metrics, bars=None, strategy="atr_swing"):
         return _candidate_entries_orb(side, metrics, bars or [])
     elif strat in ("zscore", "bollinger extremes (z-score)", "bollinger", "mean_reversion"):
         return _candidate_entries_zscore(side, metrics, bars or [])
+    elif strat in ("acc_ifvg", "accumulation + ifvg", "ifvg"):
+        return _candidate_entries_acc_ifvg(side, metrics, bars or [])
+    elif strat in ("sweep_sms", "sweep + sms", "sms"):
+        return _candidate_entries_sweep_sms(side, metrics, bars or [])
     else:
         return _candidate_entries_atr_swing(side, metrics)
 
@@ -879,7 +1062,13 @@ def find_dual_recommendations(
         "zscore": "zscore",
         "bollinger extremes (z-score)": "zscore",
         "bollinger": "zscore",
-        "mean_reversion": "zscore"
+        "mean_reversion": "zscore",
+        "acc_ifvg": "acc_ifvg",
+        "accumulation + ifvg": "acc_ifvg",
+        "ifvg": "acc_ifvg",
+        "sweep_sms": "sweep_sms",
+        "sweep + sms": "sweep_sms",
+        "sms": "sweep_sms"
     }
     normalized_strategy = strategy_map.get(strat_key, "atr_swing")
     strategy_labels = {
@@ -887,7 +1076,9 @@ def find_dual_recommendations(
         "poc": "Breakout + Retest Point of Control (POC)",
         "fvg": "Liquidity Sweep + Fair Value Gap (FVG)",
         "orb": "Session Open Range Breakout (ORB)",
-        "zscore": "Bollinger Bands Extremes (Z-Score)"
+        "zscore": "Bollinger Bands Extremes (Z-Score)",
+        "acc_ifvg": "Accumulation + Inverse FVG (IFVG)",
+        "sweep_sms": "Liquidity Sweep + Market Structure Shift (SMS)"
     }
     strategy_label = strategy_labels.get(normalized_strategy, "ATR Pullback & Swing Structure")
 
