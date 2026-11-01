@@ -11,6 +11,7 @@ Features:
 import os
 import sys
 import re
+import math
 import ctypes
 import threading
 import json
@@ -525,7 +526,7 @@ class TimeMachineProGUI:
         self.tpsl_mode_var = tk.StringVar(value="Auto Optimize")
         self.tpsl_mode_combo = ttk.Combobox(
             tpsl_card, textvariable=self.tpsl_mode_var,
-            values=["Auto Optimize", "Fixed TP/SL", "TP/SL Range"],
+            values=["Auto Optimize", "Fixed TP/SL", "TP/SL Range", "Risk Reward"],
             state="readonly", font=("Segoe UI", 8)
         )
         self.tpsl_mode_combo.pack(fill=tk.X, pady=(4, 5))
@@ -541,12 +542,15 @@ class TimeMachineProGUI:
         self.sl_min_points_var = tk.StringVar(value="500")
         self.sl_max_points_var = tk.StringVar(value="2000")
         self.sl_step_points_var = tk.StringVar(value="250")
+        self.rr_ratio_var = tk.StringVar(value="1:2.0")
+        self.rr_sl_points_var = tk.StringVar(value="1000")
 
         # Auto re-calculate / re-scan when research points are edited
         for var in (
             self.point_size_var, self.fixed_tp_points_var, self.fixed_sl_points_var,
             self.tp_min_points_var, self.tp_max_points_var, self.tp_step_points_var,
-            self.sl_min_points_var, self.sl_max_points_var, self.sl_step_points_var
+            self.sl_min_points_var, self.sl_max_points_var, self.sl_step_points_var,
+            self.rr_ratio_var, self.rr_sl_points_var
         ):
             var.trace_add("write", lambda *args: self._on_tpsl_points_modified())
 
@@ -752,6 +756,45 @@ class TimeMachineProGUI:
             self.horizon_var.set("4 Jam (240 bars M1)")
         self.refresh_data()
 
+    def _parse_rr_ratio(self, text):
+        s = str(text or "").strip()
+        if ":" in s:
+            parts = s.split(":")
+            if len(parts) == 2:
+                num = float(parts[0].strip())
+                denom = float(parts[1].strip())
+                if num > 0 and denom > 0:
+                    return denom / num
+        val = float(s)
+        if not math.isfinite(val) or val <= 0:
+            raise ValueError("R:R ratio must be greater than 0.")
+        return val
+
+    def _update_rr_info_label(self):
+        if not hasattr(self, "rr_info_label") or not self.rr_info_label.winfo_exists():
+            return
+        try:
+            ratio = self._parse_rr_ratio(self.rr_ratio_var.get())
+            sl_pts = int(self.rr_sl_points_var.get().strip())
+            p_size = float(self.point_size_var.get().strip())
+            if ratio <= 0 or sl_pts <= 0 or p_size <= 0:
+                self.rr_info_label.configure(text="", fg=TEXT_MUTED)
+                return
+            tp_pts = max(1, int(round(sl_pts * ratio)))
+            tp_val = tp_pts * p_size
+            sl_val = sl_pts * p_size
+            tp_str = f"${tp_val:,.2f}" if abs(tp_val) >= 1.0 else f"${tp_val:g}"
+            sl_str = f"${sl_val:,.2f}" if abs(sl_val) >= 1.0 else f"${sl_val:g}"
+            self.rr_info_label.configure(
+                text=f"🎯 Target TP: {tp_pts:,} pts ({tp_str}) | SL: {sl_pts:,} pts ({sl_str})",
+                fg=GOLD
+            )
+        except Exception:
+            self.rr_info_label.configure(
+                text="ℹ️ Masukkan R:R (mis. 1:2) dan SL points yang valid",
+                fg=TEXT_MUTED
+            )
+
     def _render_tpsl_fields(self):
         for child in self.tpsl_fields_frame.winfo_children():
             child.destroy()
@@ -789,6 +832,29 @@ class TimeMachineProGUI:
         if mode == "Fixed TP/SL":
             add_field(self.tpsl_fields_frame, "Take Profit (points)", self.fixed_tp_points_var, 2, 0)
             add_field(self.tpsl_fields_frame, "Stop Loss (points)", self.fixed_sl_points_var, 2, 1)
+        elif mode == "Risk Reward":
+            cell_rr = tk.Frame(self.tpsl_fields_frame, bg=CARD_BG)
+            cell_rr.grid(row=2, column=0, sticky="ew", padx=(0, 0), pady=2)
+            tk.Label(cell_rr, text="Target R:R", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w")
+            self.rr_combo = ttk.Combobox(
+                cell_rr, textvariable=self.rr_ratio_var,
+                values=["1:1.5", "1:2.0", "1:3.0", "1:4.0", "1:5.0", "1:10.0"],
+                font=("Segoe UI", 8), width=9
+            )
+            self.rr_combo.pack(fill=tk.X, ipady=1)
+            self.rr_combo.bind("<<ComboboxSelected>>", lambda e: self._on_tpsl_points_modified())
+            self.tpsl_fields_frame.grid_columnconfigure(0, weight=1)
+
+            add_field(self.tpsl_fields_frame, "Stop Loss (points)", self.rr_sl_points_var, 2, 1)
+
+            self.rr_info_label = tk.Label(
+                self.tpsl_fields_frame,
+                text="",
+                font=("Segoe UI", 7, "bold"),
+                fg=GOLD, bg=CARD_BG, justify=tk.LEFT
+            )
+            self.rr_info_label.grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 2))
+            self._update_rr_info_label()
         else:
             tk.Label(self.tpsl_fields_frame, text="Take Profit range (points)", font=("Segoe UI", 7, "bold"), fg=GOLD, bg=CARD_BG).grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
             add_field(self.tpsl_fields_frame, "TP Min", self.tp_min_points_var, 3, 0)
@@ -815,6 +881,9 @@ class TimeMachineProGUI:
         if mode == "Auto Optimize":
             return
 
+        if mode == "Risk Reward":
+            self._update_rr_info_label()
+
         # Quick validation without popping modal dialogs
         try:
             p_size = float(self.point_size_var.get().strip())
@@ -824,6 +893,11 @@ class TimeMachineProGUI:
                 tp = int(self.fixed_tp_points_var.get().strip())
                 sl = int(self.fixed_sl_points_var.get().strip())
                 if tp <= 0 or sl <= 0:
+                    return
+            elif mode == "Risk Reward":
+                ratio = self._parse_rr_ratio(self.rr_ratio_var.get())
+                sl = int(self.rr_sl_points_var.get().strip())
+                if ratio <= 0 or sl <= 0:
                     return
             elif mode == "TP/SL Range":
                 tp_min = int(self.tp_min_points_var.get().strip())
@@ -847,7 +921,8 @@ class TimeMachineProGUI:
         mode = {
             "Auto Optimize": "auto",
             "Fixed TP/SL": "fixed",
-            "TP/SL Range": "range"
+            "TP/SL Range": "range",
+            "Risk Reward": "risk_reward"
         }.get(self.tpsl_mode_var.get(), "auto")
         params = {"tpsl_mode": mode}
         if mode != "auto":
@@ -856,6 +931,9 @@ class TimeMachineProGUI:
         if mode == "fixed":
             params["fixed_tp_points"] = int(self.fixed_tp_points_var.get().strip())
             params["fixed_sl_points"] = int(self.fixed_sl_points_var.get().strip())
+        elif mode == "risk_reward":
+            params["rr_ratio"] = self._parse_rr_ratio(self.rr_ratio_var.get())
+            params["rr_sl_points"] = int(self.rr_sl_points_var.get().strip())
         elif mode == "range":
             params.update({
                 "tp_min_points": int(self.tp_min_points_var.get().strip()),
@@ -1326,6 +1404,8 @@ class TimeMachineProGUI:
             "sl_min_points": self.sl_min_points_var.get(),
             "sl_max_points": self.sl_max_points_var.get(),
             "sl_step_points": self.sl_step_points_var.get(),
+            "rr_ratio": self.rr_ratio_var.get(),
+            "rr_sl_points": self.rr_sl_points_var.get(),
             "manual_direction": self.direction_var.get(),
             "manual_entry": self.manual_entry_var.get(),
             "manual_stop": self.manual_stop_var.get(),
@@ -1390,7 +1470,9 @@ class TimeMachineProGUI:
                 ("tp_step_points", self.tp_step_points_var),
                 ("sl_min_points", self.sl_min_points_var),
                 ("sl_max_points", self.sl_max_points_var),
-                ("sl_step_points", self.sl_step_points_var)
+                ("sl_step_points", self.sl_step_points_var),
+                ("rr_ratio", self.rr_ratio_var),
+                ("rr_sl_points", self.rr_sl_points_var)
             ):
                 if key in settings:
                     variable.set(str(settings[key]))

@@ -176,6 +176,40 @@ class DualAutoSearchTests(unittest.TestCase):
         self.assertIn("historical OHLC touch proxy", result["buy"]["plan"]["entry_fill_assumption"])
         self.assertGreater(mocked.call_count, 4)
 
+    def test_risk_reward_mode_generates_exact_ratio_plans(self):
+        result = analyzer.find_dual_recommendations(
+            make_bars(), horizon_bars=4, replays=100, engine_mode="legacy",
+            tpsl_mode="risk_reward", point_size=0.01,
+            rr_ratio=3.0, rr_sl_points=500
+        )
+        self.assertEqual(result["tpsl_config"]["mode"], "risk_reward")
+        self.assertEqual(result["tpsl_config"]["rr_ratio"], 3.0)
+        self.assertEqual(result["tpsl_config"]["sl_points"], 500)
+        self.assertEqual(result["tpsl_config"]["tp_points"], 1500)
+        for side in ("buy", "sell"):
+            plan = result[side]["plan"]
+            self.assertEqual(plan["tp_points"], 1500)
+            self.assertEqual(plan["sl_points"], 500)
+            self.assertAlmostEqual(plan["target_rr"], 3.0, places=4)
+            if side == "buy":
+                self.assertAlmostEqual(plan["target"] - plan["entry"], 15.0, places=6)
+                self.assertAlmostEqual(plan["entry"] - plan["stop"], 5.0, places=6)
+            else:
+                self.assertAlmostEqual(plan["entry"] - plan["target"], 15.0, places=6)
+                self.assertAlmostEqual(plan["stop"] - plan["entry"], 5.0, places=6)
+
+    def test_risk_reward_mode_validates_ratio_and_sl(self):
+        with self.assertRaisesRegex(ValueError, "rr_ratio"):
+            analyzer.find_dual_recommendations(
+                make_bars(), tpsl_mode="risk_reward", point_size=0.01,
+                rr_ratio=-1.0, rr_sl_points=1000
+            )
+        with self.assertRaisesRegex(ValueError, "rr_sl_points"):
+            analyzer.find_dual_recommendations(
+                make_bars(), tpsl_mode="risk_reward", point_size=0.01,
+                rr_ratio=2.0, rr_sl_points=0
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

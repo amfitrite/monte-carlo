@@ -216,10 +216,13 @@ def _positive_integer(value, name):
 def _normalize_tpsl_config(mode, bars_data, point_size=None,
                            fixed_tp_points=2000, fixed_sl_points=1000,
                            tp_min_points=1000, tp_max_points=5000, tp_step_points=500,
-                           sl_min_points=500, sl_max_points=2000, sl_step_points=250):
+                           sl_min_points=500, sl_max_points=2000, sl_step_points=250,
+                           rr_ratio=2.0, rr_sl_points=1000):
     mode = str(mode or "auto").strip().lower()
-    if mode not in ("auto", "fixed", "range"):
-        raise ValueError("tpsl_mode must be 'auto', 'fixed', or 'range'.")
+    if mode in ("risk reward", "risk_reward", "rr"):
+        mode = "risk_reward"
+    if mode not in ("auto", "fixed", "range", "risk_reward"):
+        raise ValueError("tpsl_mode must be 'auto', 'fixed', 'range', or 'risk_reward'.")
     if mode == "auto":
         return {"mode": "auto"}
 
@@ -229,7 +232,7 @@ def _normalize_tpsl_config(mode, bars_data, point_size=None,
         point_size = float(point_size)
     except (TypeError, ValueError):
         raise ValueError(
-            "A valid point_size is required for Fixed TP/SL and TP/SL Range. "
+            "A valid point_size is required for Fixed TP/SL, TP/SL Range, and Risk Reward. "
             "Set it to the broker's price value for one point."
         )
     if not np.isfinite(point_size) or point_size <= 0:
@@ -241,6 +244,23 @@ def _normalize_tpsl_config(mode, bars_data, point_size=None,
             "point_size": point_size,
             "tp_points": _positive_integer(fixed_tp_points, "fixed_tp_points"),
             "sl_points": _positive_integer(fixed_sl_points, "fixed_sl_points")
+        }
+
+    if mode == "risk_reward":
+        try:
+            ratio = float(rr_ratio)
+        except (TypeError, ValueError):
+            raise ValueError("rr_ratio must be a positive number.")
+        if not np.isfinite(ratio) or ratio <= 0:
+            raise ValueError("rr_ratio must be a positive number.")
+        sl_pts = _positive_integer(rr_sl_points, "rr_sl_points")
+        tp_pts = max(1, int(round(sl_pts * ratio)))
+        return {
+            "mode": "risk_reward",
+            "point_size": point_size,
+            "rr_ratio": ratio,
+            "sl_points": sl_pts,
+            "tp_points": tp_pts
         }
 
     tp_min = _positive_integer(tp_min_points, "tp_min_points")
@@ -277,7 +297,7 @@ def _build_candidate_plans(side, entries, metrics, interval_minutes, config):
                     plans.append(_build_plan(
                         side, entry, metrics, risk_atr, rr, interval_minutes
                     ))
-    elif mode == "fixed":
+    elif mode in ("fixed", "risk_reward"):
         for entry in entries:
             plans.append(_build_point_plan(
                 side, entry, config["tp_points"], config["sl_points"],
@@ -415,14 +435,16 @@ def find_dual_recommendations(
     engine_mode="legacy", tpsl_mode="auto", point_size=None,
     fixed_tp_points=2000, fixed_sl_points=1000,
     tp_min_points=1000, tp_max_points=5000, tp_step_points=500,
-    sl_min_points=500, sl_max_points=2000, sl_step_points=250
+    sl_min_points=500, sl_max_points=2000, sl_step_points=250,
+    rr_ratio=2.0, rr_sl_points=1000
 ):
     """
     Search and rank BUY LIMIT and SELL LIMIT candidates.
 
     auto derives TP/SL from ATR and structure; fixed holds user distances constant;
-    range searches a bounded grid of TP/SL point distances. point_size is the
-    price value of one broker point and may differ by broker/symbol.
+    range searches a bounded grid of TP/SL point distances; risk_reward locks a
+    specific target R:R ratio (e.g. 1:2, 1:10) and searches for optimal limit entries.
+    point_size is the price value of one broker point and may differ by broker/symbol.
     """
     if engine_mode not in ("legacy", "v2", "compare"):
         raise ValueError("engine_mode must be 'legacy', 'v2', or 'compare'.")
@@ -440,7 +462,8 @@ def find_dual_recommendations(
         tpsl_mode, normalized, point_size,
         fixed_tp_points, fixed_sl_points,
         tp_min_points, tp_max_points, tp_step_points,
-        sl_min_points, sl_max_points, sl_step_points
+        sl_min_points, sl_max_points, sl_step_points,
+        rr_ratio, rr_sl_points
     )
     metrics = calculate_market_metrics(bars, period=min(len(bars), max(48, horizon_bars)))
     interval = int(normalized.get("interval_minutes", 5) or 5)
@@ -504,21 +527,21 @@ def find_dual_recommendations(
         tpsl_label = "Auto ATR/structure"
     elif tpsl_config["mode"] == "fixed":
         tpsl_label = f"Fixed TP {tpsl_config['tp_points']} / SL {tpsl_config['sl_points']} points"
+    elif tpsl_config["mode"] == "risk_reward":
+        tpsl_label = f"Risk Reward 1:{tpsl_config['rr_ratio']:g} (TP {tpsl_config['tp_points']} / SL {tpsl_config['sl_points']} pts)"
     else:
         tpsl_label = (
             f"TP range {tpsl_config['tp_values'][0]}-{tpsl_config['tp_values'][-1]}; "
             f"SL range {tpsl_config['sl_values'][0]}-{tpsl_config['sl_values'][-1]} points"
         )
+    tpsl_report = dict(tpsl_config)
+    tpsl_report["label"] = tpsl_label
     return {
         "metrics": metrics,
         "best_direction": best_dir,
         "summary": summary,
         "engine_mode": engine_mode,
-        "tpsl_config": {
-            "mode": tpsl_config["mode"],
-            "label": tpsl_label,
-            "point_size": tpsl_config.get("point_size")
-        },
+        "tpsl_config": tpsl_report,
         "search": {
             "method": "ATR pullback + recent swing-structure candidate grid",
             "buy_candidates_scanned": buy_count,
