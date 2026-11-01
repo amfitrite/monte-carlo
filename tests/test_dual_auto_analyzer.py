@@ -210,15 +210,22 @@ class DualAutoSearchTests(unittest.TestCase):
                 rr_ratio=2.0, rr_sl_points=0
             )
 
-    def test_all_five_strategies_generate_valid_dual_plans(self):
+    def test_all_nine_strategies_generate_valid_dual_plans(self):
         bars = make_bars()
-        strategies = ["atr_swing", "poc", "fvg", "orb", "zscore"]
+        strategies = [
+            "atr_swing", "poc", "fvg", "orb", "zscore",
+            "acc_ifvg", "sweep_sms", "absorption", "footprint"
+        ]
         expected_labels = {
             "atr_swing": "ATR Pullback & Swing Structure",
             "poc": "Breakout + Retest Point of Control (POC)",
             "fvg": "Liquidity Sweep + Fair Value Gap (FVG)",
             "orb": "Session Open Range Breakout (ORB)",
-            "zscore": "Bollinger Bands Extremes (Z-Score)"
+            "zscore": "Bollinger Bands Extremes (Z-Score)",
+            "acc_ifvg": "Accumulation + Inverse FVG (IFVG)",
+            "sweep_sms": "Liquidity Sweep + Market Structure Shift (SMS)",
+            "absorption": "Liquidity Absorption + Volume Bubbles",
+            "footprint": "Footprint (Order Flow) Bid/Ask Absorption Proxy"
         }
         for strat in strategies:
             res = analyzer.find_dual_recommendations(

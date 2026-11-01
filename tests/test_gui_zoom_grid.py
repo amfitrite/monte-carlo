@@ -10,10 +10,11 @@ import os
 class GuiZoomAndGridTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        if os.environ.get("DISPLAY") is None:
-            raise unittest.SkipTest("Skipping GUI tests in headless environment without DISPLAY")
-        cls.root = tk.Tk()
-        cls.root.withdraw()
+        try:
+            cls.root = tk.Tk()
+            cls.root.withdraw()
+        except Exception as e:
+            raise unittest.SkipTest(f"Skipping GUI tests in headless environment without display: {e}")
         cls.bars = t.make_bars(260)
         cls.dual_res = analyzer.find_dual_recommendations(
             cls.bars, horizon_bars=12, replays=50, engine_mode="legacy"

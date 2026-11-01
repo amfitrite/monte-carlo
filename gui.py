@@ -545,7 +545,11 @@ class TimeMachineProGUI:
                 "Breakout + POC Retest",
                 "Liquidity Sweep + FVG",
                 "Session ORB (Asia/London/NY)",
-                "Bollinger Extremes (Z-Score)"
+                "Bollinger Extremes (Z-Score)",
+                "Accumulation + Inverse FVG (IFVG)",
+                "Liquidity Sweep + Shift Structure (SMS)",
+                "Liquidity Absorption + Volume Bubbles",
+                "Order Flow Footprint Proxy"
             ],
             state="readonly", font=("Segoe UI", 8)
         )
@@ -939,7 +943,11 @@ class TimeMachineProGUI:
             "Breakout + POC Retest": "Mendeteksi Point of Control (POC) dan Value Area dari Volume Profile untuk entri retest.",
             "Liquidity Sweep + FVG": "Mendeteksi pembersihan likuiditas (sweep) dan Fair Value Gap (FVG) imbalance.",
             "Session ORB (Asia/London/NY)": "Mengidentifikasi batas Open Range Breakout (ORB) dan entri retest batas pembukaan sesi.",
-            "Bollinger Extremes (Z-Score)": "Menempatkan limit order di deviasi ekstrem Bollinger Bands (mean reversion +/-2.0 sigma)."
+            "Bollinger Extremes (Z-Score)": "Menempatkan limit order di deviasi ekstrem Bollinger Bands (mean reversion +/-2.0 sigma).",
+            "Accumulation + Inverse FVG (IFVG)": "Mendeteksi range akumulasi, sweep likuiditas, dan entri retest pada Inverse Fair Value Gap (IFVG).",
+            "Liquidity Sweep + Shift Structure (SMS)": "Mendeteksi sweep swing high/low, konfirmasi Market Structure Shift (SMS), dan entri retest Order Block.",
+            "Liquidity Absorption + Volume Bubbles": "Mendeteksi penyerapan likuiditas di level ekstrem saat terjadi lonjakan volume bar (volume bubble proxy).",
+            "Order Flow Footprint Proxy": "Mendeteksi bid/ask absorption melalui lonjakan volume dan penolakan sumbu panjang (rejection wick > 1.5x body)."
         }
         text = desc_map.get(self.strategy_var.get(), "")
         if hasattr(self, "strategy_desc_label"):
@@ -1129,7 +1137,11 @@ class TimeMachineProGUI:
             "Breakout + POC Retest": "poc",
             "Liquidity Sweep + FVG": "fvg",
             "Session ORB (Asia/London/NY)": "orb",
-            "Bollinger Extremes (Z-Score)": "zscore"
+            "Bollinger Extremes (Z-Score)": "zscore",
+            "Accumulation + Inverse FVG (IFVG)": "acc_ifvg",
+            "Liquidity Sweep + Shift Structure (SMS)": "sweep_sms",
+            "Liquidity Absorption + Volume Bubbles": "absorption",
+            "Order Flow Footprint Proxy": "footprint"
         }.get(self.strategy_var.get(), "atr_swing")
         try:
             tpsl_params = self._get_tpsl_scan_params()
