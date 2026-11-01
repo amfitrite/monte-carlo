@@ -8,7 +8,10 @@ live spread detection, and open position importing.
 import os
 import time
 import json
-import MetaTrader5 as mt5
+try:
+    import MetaTrader5 as mt5
+except ImportError:
+    mt5 = None
 
 CACHE_FILE_MT5 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data_cache_mt5.json")
 
