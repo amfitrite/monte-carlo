@@ -769,7 +769,7 @@ class TimeMachineProGUI:
         try:
             point_size = float(value)
             if point_size > 0:
-                self.point_size_var.set(format(point_size, ".10g"))
+                self.root.after(0, lambda value=point_size: self.point_size_var.set(format(value, ".10g")))
         except (TypeError, ValueError):
             pass
 
@@ -806,6 +806,7 @@ class TimeMachineProGUI:
         proj_mode = self.current_projection_mode
         tb_mode = self.current_tie_break
         season_mode = self.current_seasonality
+        engine_mode = {"Legacy V1 (Default)": "legacy", "Enhanced OHLC V2": "v2", "Compare V1 vs V2": "compare"}.get(self.engine_mode_var.get(), "legacy")
         try:
             tpsl_params = self._get_tpsl_scan_params()
         except (TypeError, ValueError) as exc:
@@ -825,7 +826,7 @@ class TimeMachineProGUI:
                     projection_mode=proj_mode,
                     tie_break=tb_mode,
                     seasonality=season_mode,
-                    engine_mode={"Legacy V1 (Default)": "legacy", "Enhanced OHLC V2": "v2", "Compare V1 vs V2": "compare"}.get(self.engine_mode_var.get(), "legacy"),
+                    engine_mode=engine_mode,
                     **tpsl_params
                 )
                 self.root.after(0, lambda: self._apply_dual_results(res))
