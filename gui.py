@@ -548,10 +548,13 @@ class TimeMachineProGUI:
         # Dual Fan Charts Container (Side-by-Side Split)
         charts_split = tk.Frame(self.auto_view_frame, bg=DARK_BG)
         charts_split.pack(fill=tk.BOTH, expand=True)
+        charts_split.rowconfigure(0, weight=1)
+        charts_split.grid_columnconfigure(0, weight=1, uniform="group1")
+        charts_split.grid_columnconfigure(1, weight=1, uniform="group1")
 
         # LEFT: BUY FAN CHART
         self.buy_chart_frame = tk.Frame(charts_split, bg=PANEL_BG, highlightbackground=GREEN, highlightthickness=1)
-        self.buy_chart_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 6))
+        self.buy_chart_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
 
         buy_header = tk.Frame(self.buy_chart_frame, bg=PANEL_BG, padx=10, pady=6)
         buy_header.pack(fill=tk.X)
@@ -565,7 +568,7 @@ class TimeMachineProGUI:
 
         # RIGHT: SELL FAN CHART
         self.sell_chart_frame = tk.Frame(charts_split, bg=PANEL_BG, highlightbackground=RED, highlightthickness=1)
-        self.sell_chart_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(6, 0))
+        self.sell_chart_frame.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
 
         sell_header = tk.Frame(self.sell_chart_frame, bg=PANEL_BG, padx=10, pady=6)
         sell_header.pack(fill=tk.X)
