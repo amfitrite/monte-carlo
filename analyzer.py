@@ -136,15 +136,21 @@ def _estimate_entry_touch(bars, side, entry_distance_atr, horizon_bars,
     }
 
 
-def _build_plan(side, entry, metrics, risk_atr, rr, interval_minutes):
+def _build_plan(side, entry, metrics, risk_atr, rr, interval_minutes, fixed_sl_points=None):
     atr = metrics["atr"]
     if side == "buy":
-        structural_risk = max(0.0, entry - metrics["swing_low"]) + 0.10 * atr
-        risk = max(atr * risk_atr, structural_risk)
+        if fixed_sl_points is not None and fixed_sl_points > 0:
+            risk = fixed_sl_points
+        else:
+            structural_risk = max(0.0, entry - metrics["swing_low"]) + 0.10 * atr
+            risk = max(atr * risk_atr, structural_risk)
         stop, target = entry - risk, entry + risk * rr
     else:
-        structural_risk = max(0.0, metrics["swing_high"] - entry) + 0.10 * atr
-        risk = max(atr * risk_atr, structural_risk)
+        if fixed_sl_points is not None and fixed_sl_points > 0:
+            risk = fixed_sl_points
+        else:
+            structural_risk = max(0.0, metrics["swing_high"] - entry) + 0.10 * atr
+            risk = max(atr * risk_atr, structural_risk)
         stop, target = entry + risk, entry - risk * rr
     return {
         "entry_price": round(entry, 2),
@@ -184,17 +190,22 @@ def _rank_score(result, touch_stats):
 
 
 def _scan_side(side, metrics, bars_data, horizon_bars, search_replays, spread,
-               seed, projection_mode, tie_break, seasonality, engine_mode):
+               seed, projection_mode, tie_break, seasonality, engine_mode, fixed_sl_points=None):
     interval = int(bars_data.get("interval_minutes", 5) or 5)
     entries = _candidate_entries(side, metrics)
     risk_multipliers = (0.80, 1.10)
     rr_values = (1.50, 2.0)
     candidates = []
     index = 0
+
+    # If fixed SL is used, we only need one risk iteration since risk is fixed.
+    if fixed_sl_points is not None and fixed_sl_points > 0:
+        risk_multipliers = (1.0,)
+
     for entry in entries:
         for risk_atr in risk_multipliers:
             for rr in rr_values:
-                plan = _build_plan(side, entry, metrics, risk_atr, rr, interval)
+                plan = _build_plan(side, entry, metrics, risk_atr, rr, interval, fixed_sl_points)
                 result = _run_one(
                     plan, bars_data, horizon_bars, search_replays, spread,
                     seed + index, projection_mode, tie_break, seasonality, engine_mode
@@ -269,7 +280,7 @@ def _finalize_recommendation(side, selected, candidate_count, bars_data,
 def find_dual_recommendations(
     bars_data, horizon_bars=48, replays=5000, spread=0.24, seed=19,
     projection_mode="free_drift", tie_break="smart", seasonality=False,
-    engine_mode="legacy"
+    engine_mode="legacy", fixed_sl_points=None
 ):
     """
     Search and rank multiple BUY LIMIT and SELL LIMIT candidates.
@@ -299,11 +310,11 @@ def find_dual_recommendations(
 
     buy_selected, buy_count = _scan_side(
         "buy", metrics, normalized, horizon_bars, search_replays, spread, seed,
-        projection_mode, tie_break, seasonality, primary_mode
+        projection_mode, tie_break, seasonality, primary_mode, fixed_sl_points
     )
     sell_selected, sell_count = _scan_side(
         "sell", metrics, normalized, horizon_bars, search_replays, spread, seed + 1000,
-        projection_mode, tie_break, seasonality, primary_mode
+        projection_mode, tie_break, seasonality, primary_mode, fixed_sl_points
     )
     buy_res = _finalize_recommendation(
         "buy", buy_selected, buy_count, normalized, metrics, horizon_bars,

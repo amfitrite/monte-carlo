@@ -406,6 +406,35 @@ class TimeMachineProGUI:
         # Section 3A: AUTO MODE SPECIFIC CONTROLS
         self.auto_sidebar_frame = tk.Frame(self.left_panel, bg=PANEL_BG)
         
+        tp_sl_card = tk.Frame(self.auto_sidebar_frame, bg=CARD_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
+        tp_sl_card.pack(fill=tk.X, pady=(0, 10))
+
+        tk.Label(tp_sl_card, text="🎯 DUAL AUTO TP / SL", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=CARD_BG).pack(anchor="w")
+        self.auto_tp_sl_mode_var = tk.StringVar(value="Dynamic (ATR/Structure)")
+        self.auto_tp_sl_combo = ttk.Combobox(
+            tp_sl_card, textvariable=self.auto_tp_sl_mode_var,
+            values=["Dynamic (ATR/Structure)", "Fixed TP/SL"], state="readonly", font=("Segoe UI", 8), cursor="hand2"
+        )
+        self.auto_tp_sl_combo.pack(fill=tk.X, pady=(4, 6))
+
+        self.auto_point_size_lbl = tk.Label(tp_sl_card, text="Point Size ($/point)", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG)
+        self.auto_point_size_lbl.pack(anchor="w")
+        self.auto_point_size_var = tk.StringVar(value="10.0")
+        self.auto_point_size_entry = tk.Entry(
+            tp_sl_card, textvariable=self.auto_point_size_var, font=("Segoe UI", 9),
+            bg=INPUT_BG, fg=TEXT_PRIMARY, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD
+        )
+        self.auto_point_size_entry.pack(fill=tk.X, ipady=2)
+
+        def _on_tp_sl_mode_change(e=None):
+            if self.auto_tp_sl_mode_var.get() == "Fixed TP/SL":
+                self.auto_point_size_entry.configure(state="normal")
+            else:
+                self.auto_point_size_entry.configure(state="disabled")
+
+        self.auto_tp_sl_combo.bind("<<ComboboxSelected>>", _on_tp_sl_mode_change)
+        _on_tp_sl_mode_change() # initialize
+
         info_card = tk.Frame(self.auto_sidebar_frame, bg=CARD_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
         info_card.pack(fill=tk.X, pady=(0, 12))
 
@@ -711,6 +740,14 @@ class TimeMachineProGUI:
         tb_mode = self.current_tie_break
         season_mode = self.current_seasonality
 
+        fixed_sl_points = None
+        if getattr(self, "auto_tp_sl_mode_var", None) and self.auto_tp_sl_mode_var.get() == "Fixed TP/SL":
+            try:
+                fixed_sl_points = float(self.auto_point_size_var.get())
+            except ValueError:
+                messagebox.showerror("Invalid Input", "Please enter a valid numeric value for Point Size.")
+                return
+
         self.btn_run_auto.configure(state=tk.DISABLED, text="⚡ SCANNING...")
         self.dual_summary_title.configure(text="⏳ Scanning Optimal BUY & SELL Limit setups...", fg=GOLD)
 
@@ -724,7 +761,8 @@ class TimeMachineProGUI:
                     projection_mode=proj_mode,
                     tie_break=tb_mode,
                     seasonality=season_mode,
-                    engine_mode={"Legacy V1 (Default)": "legacy", "Enhanced OHLC V2": "v2", "Compare V1 vs V2": "compare"}.get(self.engine_mode_var.get(), "legacy")
+                    engine_mode={"Legacy V1 (Default)": "legacy", "Enhanced OHLC V2": "v2", "Compare V1 vs V2": "compare"}.get(self.engine_mode_var.get(), "legacy"),
+                    fixed_sl_points=fixed_sl_points
                 )
                 self.root.after(0, lambda: self._apply_dual_results(res))
             except Exception as e:
@@ -1044,6 +1082,8 @@ class TimeMachineProGUI:
             "seasonality": self.seasonality_var.get(),
             "engine_mode": self.engine_mode_var.get(),
             "grid_lines": self.grid_lines_var.get(),
+            "auto_tp_sl_mode": self.auto_tp_sl_mode_var.get(),
+            "auto_point_size": self.auto_point_size_var.get(),
             "manual_direction": self.direction_var.get(),
             "manual_entry": self.manual_entry_var.get(),
             "manual_stop": self.manual_stop_var.get(),
@@ -1094,6 +1134,16 @@ class TimeMachineProGUI:
             saved_grid_lines = settings.get("grid_lines", "25 Lines (Default)")
             if saved_grid_lines in self.grid_lines_combo["values"]:
                 self.grid_lines_var.set(saved_grid_lines)
+
+            saved_tp_sl_mode = settings.get("auto_tp_sl_mode")
+            if saved_tp_sl_mode in self.auto_tp_sl_combo["values"]:
+                self.auto_tp_sl_mode_var.set(saved_tp_sl_mode)
+                if saved_tp_sl_mode == "Fixed TP/SL":
+                    self.auto_point_size_entry.configure(state="normal")
+
+            saved_point_size = settings.get("auto_point_size")
+            if saved_point_size:
+                self.auto_point_size_var.set(saved_point_size)
 
             # Restore Statistical Methodology
             saved_pm = settings.get("projection_mode")
