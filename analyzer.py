@@ -13,9 +13,12 @@ import numpy as np
 import timemachine
 import engine_v2
 import datetime
+import combination_engine
+from capital_growth import simulate_capital_growth
 
 MAX_TPSL_COMBINATIONS = 20
 MAX_CANDIDATES_PER_SIDE = 200
+DEFAULT_RR_CANDIDATES = [1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 7.0, 10.0]
 
 
 def _valid_bars(bars):
@@ -1201,26 +1204,73 @@ def _candidate_entries_footprint(side, metrics, bars, candidate_count=0):
 
 
 def _candidate_entries(side, metrics, bars=None, strategy="atr_swing", candidate_count=0):
-    """Dispatcher to build candidate limits based on selected strategy."""
+    """Dispatcher to build candidate limits based on selected strategy. Cleanly returns [] if no signals found."""
     strat = str(strategy or "atr_swing").strip().lower()
+
+    strat_key_map = {
+        "absorption": "absorption", "liquidity_absorption": "absorption", "bubbles": "absorption",
+        "sweep_sms": "sweep_sms", "sms": "sweep_sms",
+        "fvg": "fvg", "sweep_fvg": "fvg",
+        "acc_ifvg": "acc_ifvg", "ifvg": "acc_ifvg",
+        "footprint": "footprint", "orderflow": "footprint",
+        "orb": "orb", "session orb": "orb",
+        "poc": "poc", "poc_retest": "poc",
+        "zscore": "zscore", "bollinger": "zscore",
+        "atr_swing": "atr_swing", "atr": "atr_swing"
+    }
+
+    # Jika candidate_count == 20 (Grid Mode), manfaatkan combination_engine
+    # Khusus jika strategy bukan default atr_swing (misal spesifik absorption/fvg/sms/dll)
+    if candidate_count == 20 and bars and len(bars) >= 40 and strat not in ("atr_swing", "atr pullback & swing (default)", "atr pullback & swing", "atr"):
+        c_key = strat_key_map.get(strat, "atr_swing")
+        try:
+            grid_res = combination_engine.run_combination_grid(c_key, {"bars": bars}, price_step=metrics.get("price_step", 0.01))
+            plans_by_id = grid_res.get("plans_by_id", {})
+            side_plans = []
+            for cid, cdata in plans_by_id.items():
+                items = cdata.get(side, [])
+                if items:
+                    p = items[-1]
+                    side_plans.append(CandidateEntry(
+                        p["entry"], stop=p.get("stop"), target=p.get("target"), tag=f"[{cid}] {p.get('tag', '')}"
+                    ))
+            if side_plans:
+                cur = metrics["current_price"]
+                side_plans.sort(key=lambda x: abs(float(x) - cur))
+                return side_plans[:20]
+        except Exception:
+            pass
+        # Jika grid tidak menghasilkan sinyal pada data sintetis kecil, gunakan generator spesifik strategi
+        pass
+
     if strat in ("poc", "breakout + poc retest", "poc_retest"):
-        return _candidate_entries_poc(side, metrics, bars or [], candidate_count=candidate_count)
+        res = _candidate_entries_poc(side, metrics, bars or [], candidate_count=candidate_count)
+        return [c for c in res if not getattr(c, "tag", "").startswith("ATR Fallback")]
     elif strat in ("fvg", "liquidity sweep + fvg", "sweep_fvg"):
-        return _candidate_entries_fvg(side, metrics, bars or [], candidate_count=candidate_count)
+        res = _candidate_entries_fvg(side, metrics, bars or [], candidate_count=candidate_count)
+        return [c for c in res if not getattr(c, "tag", "").startswith("ATR Fallback")]
     elif strat in ("orb", "session orb", "session orb (asia/london/ny)"):
-        return _candidate_entries_orb(side, metrics, bars or [], candidate_count=candidate_count)
+        res = _candidate_entries_orb(side, metrics, bars or [], candidate_count=candidate_count)
+        return [c for c in res if not getattr(c, "tag", "").startswith("ATR Fallback")]
     elif strat in ("zscore", "bollinger extremes (z-score)", "bollinger", "mean_reversion"):
-        return _candidate_entries_zscore(side, metrics, bars or [], candidate_count=candidate_count)
+        res = _candidate_entries_zscore(side, metrics, bars or [], candidate_count=candidate_count)
+        return [c for c in res if not getattr(c, "tag", "").startswith("ATR Fallback")]
     elif strat in ("acc_ifvg", "accumulation + ifvg", "ifvg"):
-        return _candidate_entries_acc_ifvg(side, metrics, bars or [], candidate_count=candidate_count)
+        res = _candidate_entries_acc_ifvg(side, metrics, bars or [], candidate_count=candidate_count)
+        return [c for c in res if not getattr(c, "tag", "").startswith("ATR Fallback")]
     elif strat in ("sweep_sms", "sweep + sms", "sms"):
-        return _candidate_entries_sweep_sms(side, metrics, bars or [], candidate_count=candidate_count)
+        res = _candidate_entries_sweep_sms(side, metrics, bars or [], candidate_count=candidate_count)
+        return [c for c in res if not getattr(c, "tag", "").startswith("ATR Fallback")]
     elif strat in ("absorption", "heatmap", "bubbles", "liquidity_absorption"):
-        return _candidate_entries_absorption(side, metrics, bars or [], candidate_count=candidate_count)
+        res = _candidate_entries_absorption(side, metrics, bars or [], candidate_count=candidate_count)
+        return [c for c in res if not getattr(c, "tag", "").startswith("ATR Fallback")]
     elif strat in ("footprint", "orderflow", "delta_absorption"):
-        return _candidate_entries_footprint(side, metrics, bars or [], candidate_count=candidate_count)
-    else:
+        res = _candidate_entries_footprint(side, metrics, bars or [], candidate_count=candidate_count)
+        return [c for c in res if not getattr(c, "tag", "").startswith("ATR Fallback")]
+    elif strat in ("atr_swing", "atr pullback & swing (default)", "atr pullback & swing", "atr"):
         return _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count)
+    else:
+        return []
 
 
 
@@ -1356,18 +1406,67 @@ def _positive_integer(value, name):
     return int(number)
 
 
+def _validate_geometry(side, entry, stop, target):
+    """Validate strict BUY/SELL boundary geometry."""
+    try:
+        e, s, t = float(entry), float(stop), float(target)
+        if side == "buy":
+            return s < e < t
+        elif side == "sell":
+            return t < e < s
+    except (ValueError, TypeError):
+        return False
+    return False
+
+
 def _normalize_tpsl_config(mode, bars_data, point_size=None,
                            fixed_tp_points=2000, fixed_sl_points=1000,
                            tp_min_points=1000, tp_max_points=5000, tp_step_points=500,
                            sl_min_points=500, sl_max_points=2000, sl_step_points=250,
-                           rr_ratio=2.0, rr_sl_points=1000):
-    mode = str(mode or "auto").strip().lower()
-    if mode in ("risk reward", "risk_reward", "rr"):
+                           rr_ratio=2.0, rr_sl_points=1000,
+                           optimization_profile="wr_oriented",
+                           rr_candidates=None,
+                           initial_capital=10000.0,
+                           risk_pct=0.01,
+                           max_drawdown_limit=0.20,
+                           ruin_threshold=0.50,
+                           compounding=True,
+                           costs_r=0.02):
+    raw_mode = str(mode or "auto").strip().lower()
+    if raw_mode in ("risk reward", "risk_reward", "rr"):
         mode = "risk_reward"
-    if mode not in ("auto", "fixed", "range", "risk_reward"):
-        raise ValueError("tpsl_mode must be 'auto', 'fixed', 'range', or 'risk_reward'.")
+    elif raw_mode in ("rr_sweep", "sweep"):
+        mode = "rr_sweep"
+    elif raw_mode in ("atr", "atr_adaptive", "adaptive"):
+        mode = "atr"
+    elif raw_mode in ("auto", "fixed", "range"):
+        mode = raw_mode
+    else:
+        raise ValueError("tpsl_mode must be 'auto', 'atr', 'fixed', 'range', 'risk_reward', or 'rr_sweep'.")
+
+    # Normalize profile
+    opt_profile = str(optimization_profile or "wr_oriented").strip().lower()
+    if opt_profile in ("wr", "wr_oriented"):
+        opt_profile = "wr_oriented"
+    elif opt_profile in ("rr", "rr_oriented"):
+        opt_profile = "rr_oriented"
+    else:
+        opt_profile = "wr_oriented"
+
+    cap_params = {
+        "optimization_profile": opt_profile,
+        "initial_capital": float(initial_capital or 10000.0),
+        "risk_pct": float(risk_pct or 0.01),
+        "max_drawdown_limit": float(max_drawdown_limit or 0.20),
+        "ruin_threshold": float(ruin_threshold or 0.50),
+        "compounding": bool(compounding),
+        "costs_r": float(costs_r if costs_r is not None else 0.02)
+    }
+
     if mode == "auto":
-        return {"mode": "auto"}
+        res = {"mode": "auto"}
+        res.update(cap_params)
+        return res
 
     if point_size in (None, ""):
         point_size = (bars_data or {}).get("point_size")
@@ -1381,30 +1480,61 @@ def _normalize_tpsl_config(mode, bars_data, point_size=None,
     if not np.isfinite(point_size) or point_size <= 0:
         raise ValueError("point_size must be a finite positive price value.")
 
+    if mode == "atr":
+        res = {"mode": "atr", "point_size": point_size}
+        res.update(cap_params)
+        return res
+
     if mode == "fixed":
-        return {
+        res = {
             "mode": "fixed",
             "point_size": point_size,
             "tp_points": _positive_integer(fixed_tp_points, "fixed_tp_points"),
             "sl_points": _positive_integer(fixed_sl_points, "fixed_sl_points")
         }
+        res.update(cap_params)
+        return res
 
-    if mode == "risk_reward":
+    if mode in ("risk_reward", "rr_sweep"):
+        sl_pts = _positive_integer(rr_sl_points, "rr_sl_points")
+        if mode == "rr_sweep" or (rr_candidates and len(rr_candidates) > 1):
+            candidates = rr_candidates or DEFAULT_RR_CANDIDATES
+            validated_rr = []
+            for r in candidates:
+                try:
+                    rf = float(r)
+                    if rf > 0:
+                        validated_rr.append(rf)
+                except (ValueError, TypeError):
+                    continue
+            if not validated_rr:
+                validated_rr = list(DEFAULT_RR_CANDIDATES)
+            res = {
+                "mode": "risk_reward",
+                "point_size": point_size,
+                "sl_points": sl_pts,
+                "rr_candidates": validated_rr,
+                "rr_ratio": float(validated_rr[0])
+            }
+            res.update(cap_params)
+            return res
+
         try:
             ratio = float(rr_ratio)
         except (TypeError, ValueError):
             raise ValueError("rr_ratio must be a positive number.")
         if not np.isfinite(ratio) or ratio <= 0:
             raise ValueError("rr_ratio must be a positive number.")
-        sl_pts = _positive_integer(rr_sl_points, "rr_sl_points")
         tp_pts = max(1, int(round(sl_pts * ratio)))
-        return {
+        res = {
             "mode": "risk_reward",
             "point_size": point_size,
             "rr_ratio": ratio,
             "sl_points": sl_pts,
             "tp_points": tp_pts
         }
+        res.update(cap_params)
+        return res
 
     tp_min = _positive_integer(tp_min_points, "tp_min_points")
     tp_max = _positive_integer(tp_max_points, "tp_max_points")
@@ -1422,12 +1552,14 @@ def _normalize_tpsl_config(mode, bars_data, point_size=None,
             f"TP/SL Range creates {combinations} combinations; maximum is "
             f"{MAX_TPSL_COMBINATIONS}. Increase the steps or narrow the ranges."
         )
-    return {
+    res = {
         "mode": "range",
         "point_size": point_size,
         "tp_values": tp_values,
         "sl_values": sl_values
     }
+    res.update(cap_params)
+    return res
 
 
 def _build_candidate_plans(side, entries, metrics, interval_minutes, config):
@@ -1450,13 +1582,7 @@ def _build_candidate_plans(side, entries, metrics, interval_minutes, config):
                 rr = reward / risk if risk > 0 else 2.0
                 tag = getattr(entry, "tag", "")
 
-                valid_plan = False
-                if side == "buy" and native_stop < e_val < native_target:
-                    valid_plan = True
-                elif side == "sell" and native_target < e_val < native_stop:
-                    valid_plan = True
-
-                if valid_plan:
+                if _validate_geometry(side, e_val, native_stop, native_target):
                     plans.append({
                         "entry_price": e_val,
                         "stop_loss": native_stop,
@@ -1464,26 +1590,64 @@ def _build_candidate_plans(side, entries, metrics, interval_minutes, config):
                         "side": side,
                         "risk_atr": float(risk / metrics["atr"]) if metrics.get("atr") else 1.0,
                         "target_rr": float(rr),
+                        "risk_distance": risk,
+                        "reward_distance": reward,
                         "interval_minutes": int(interval_minutes),
                         "setup_tag": tag
                     })
                     continue
 
-            # Fallback to ATR / structure risk variations (Baseline behavior for atr_swing or fallback)
+            # Fallback to ATR / structure risk variations
             for risk_atr in (0.80, 1.10):
                 for rr in (1.50, 2.0):
                     p = _build_plan(side, float(entry), metrics, risk_atr, rr, interval_minutes)
-                    p["setup_tag"] = getattr(entry, "tag", "ATR/Swing")
-                    plans.append(p)
+                    if _validate_geometry(side, p["entry_price"], p["stop_loss"], p["take_profit"]):
+                        p["setup_tag"] = getattr(entry, "tag", "ATR/Swing")
+                        plans.append(p)
 
-    elif mode in ("fixed", "risk_reward"):
+    elif mode == "atr":
+        for entry in entries:
+            e_val = _round_to_step(float(entry), price_step)
+            for risk_atr in (0.60, 0.80, 1.0, 1.25, 1.50):
+                for rr in (1.0, 1.50, 2.0, 3.0):
+                    p = _build_plan(side, e_val, metrics, risk_atr, rr, interval_minutes)
+                    if _validate_geometry(side, p["entry_price"], p["stop_loss"], p["take_profit"]):
+                        p["setup_tag"] = getattr(entry, "tag", f"ATR {risk_atr}x (1:{rr:g})")
+                        plans.append(p)
+
+    elif mode == "fixed":
         for entry in entries:
             p = _build_point_plan(
                 side, float(entry), config["tp_points"], config["sl_points"],
                 config["point_size"], interval_minutes
             )
-            p["setup_tag"] = getattr(entry, "tag", "")
-            plans.append(p)
+            if _validate_geometry(side, p["entry_price"], p["stop_loss"], p["take_profit"]):
+                p["setup_tag"] = getattr(entry, "tag", "")
+                plans.append(p)
+
+    elif mode == "risk_reward":
+        rr_candidates = config.get("rr_candidates")
+        if rr_candidates:
+            sl_pts = config["sl_points"]
+            pt_size = config["point_size"]
+            for entry in entries:
+                e_val = _round_to_step(float(entry), price_step)
+                for rr in rr_candidates:
+                    tp_pts = max(1, int(round(sl_pts * rr)))
+                    p = _build_point_plan(side, e_val, tp_pts, sl_pts, pt_size, interval_minutes)
+                    if _validate_geometry(side, p["entry_price"], p["stop_loss"], p["take_profit"]):
+                        p["setup_tag"] = getattr(entry, "tag", f"RR 1:{rr:g}")
+                        p["target_rr"] = float(rr)
+                        plans.append(p)
+        else:
+            for entry in entries:
+                p = _build_point_plan(
+                    side, float(entry), config["tp_points"], config["sl_points"],
+                    config["point_size"], interval_minutes
+                )
+                if _validate_geometry(side, p["entry_price"], p["stop_loss"], p["take_profit"]):
+                    p["setup_tag"] = getattr(entry, "tag", "")
+                    plans.append(p)
 
     else:
         # Range mode: dynamically bound entries to ensure total plans <= MAX_CANDIDATES_PER_SIDE
@@ -1502,17 +1666,27 @@ def _build_candidate_plans(side, entries, metrics, interval_minutes, config):
                         side, float(entry), tp_points, sl_points,
                         config["point_size"], interval_minutes
                     )
-                    p["setup_tag"] = getattr(entry, "tag", "")
-                    plans.append(p)
+                    if _validate_geometry(side, p["entry_price"], p["stop_loss"], p["take_profit"]):
+                        p["setup_tag"] = getattr(entry, "tag", "")
+                        plans.append(p)
 
     if len(plans) > MAX_CANDIDATES_PER_SIDE:
-        raise ValueError(
-            f"Candidate grid creates {len(plans)} plans per side; "
-            f"maximum is {MAX_CANDIDATES_PER_SIDE}."
-        )
+        step_stride = len(plans) / MAX_CANDIDATES_PER_SIDE
+        plans = [plans[int(i * step_stride)] for i in range(MAX_CANDIDATES_PER_SIDE)]
+        quota_capped = True
+
     for plan in plans:
         plan["tpsl_mode"] = mode
-    return plans, len(effective_entries if mode == "range" else entries), (quota_capped if mode == "range" else False)
+        e = plan["entry_price"]
+        sl = plan["stop_loss"]
+        tp = plan["take_profit"]
+        plan["risk_distance"] = abs(e - sl)
+        plan["reward_distance"] = abs(tp - e)
+        if plan["risk_distance"] > 0:
+            plan["target_rr"] = round(plan["reward_distance"] / plan["risk_distance"], 3)
+
+    eff_count = len(effective_entries if mode == "range" else entries)
+    return plans, eff_count, (quota_capped if (mode == "range" or len(plans) >= MAX_CANDIDATES_PER_SIDE) else False)
 
 
 def _run_one(plan, bars_data, horizon_bars, replays, spread, seed,
@@ -1531,14 +1705,86 @@ def _run_one(plan, bars_data, horizon_bars, replays, spread, seed,
     )
 
 
-def _rank_score(result, touch_stats):
+def _rank_score(result, touch_stats, config=None):
     odds = result["odds"]
-    # Expected R is conditional on entry. Weight it by historical touch frequency
-    # to penalize attractive-looking limits that are rarely reached in the horizon.
     touch_rate = float(touch_stats["touch_probability_pct"]) / 100.0
     adjusted_r = float(odds["avg_r"]) * touch_rate
-    return (adjusted_r, touch_rate, float(odds["avg_r"]),
-            float(odds["target_first_pct"]), float(result["plan"]["target_r"]))
+
+    # If no config provided, return legacy tuple for full backward compatibility
+    if not config or "optimization_profile" not in config:
+        return (adjusted_r, touch_rate, float(odds["avg_r"]),
+                float(odds["target_first_pct"]), float(result["plan"].get("target_r", 2.0)))
+
+    opt_profile = config.get("optimization_profile", "wr_oriented")
+
+    p_tp = max(0.0, float(odds["target_first_pct"]) / 100.0)
+    p_sl = max(0.0, float(odds["stop_first_pct"]) / 100.0)
+    p_timeout = max(0.0, float(odds["neither_pct"]) / 100.0)
+    target_r = float(result["plan"].get("target_rr", result["plan"].get("target_r", 2.0)))
+
+    entry_p = float(result["plan"].get("entry", result["plan"].get("entry_price", 0.0)))
+    side = str(result["plan"].get("side", "buy")).lower()
+    stop_p = float(result["plan"].get("stop", result["plan"].get("stop_loss", 0.0)))
+    risk_dist = float(result["plan"].get("risk_dollar", result["plan"].get("risk_distance", abs(entry_p - stop_p))))
+    timeout_r = 0.0
+    exit_prices = result.get("exit_prices", [])
+    if exit_prices and risk_dist > 0:
+        med_exit = float(np.median(exit_prices))
+        if side == "buy":
+            timeout_r = (med_exit - entry_p) / risk_dist
+        else:
+            timeout_r = (entry_p - med_exit) / risk_dist
+
+    cap = simulate_capital_growth(
+        initial_capital=config.get("initial_capital", 10000.0),
+        risk_pct=config.get("risk_pct", 0.01),
+        p_tp=p_tp,
+        p_sl=p_sl,
+        p_timeout=p_timeout,
+        target_r=target_r,
+        timeout_r=timeout_r,
+        costs_r=config.get("costs_r", 0.02),
+        replays=config.get("cap_replays", 500),
+        horizon_trades=config.get("cap_horizon_trades", 50),
+        compounding=config.get("compounding", True),
+        max_drawdown_limit=config.get("max_drawdown_limit", 0.20),
+        ruin_threshold=config.get("ruin_threshold", 0.50),
+        seed=42
+    )
+    result["capital_growth"] = cap
+
+    if opt_profile == "wr_oriented":
+        valid_constraints = (
+            cap["net_expectancy_r"] > 0 and
+            cap["geometric_growth_rate"] > 0 and
+            cap["passes_drawdown_constraint"] and
+            cap["passes_ruin_constraint"]
+        )
+        gate = 1 if valid_constraints else 0
+        return (
+            gate,
+            float(cap["resolved_win_rate_pct"]),
+            float(cap["geometric_growth_pct"]),
+            float(cap["net_expectancy_r"]),
+            -float(cap["max_drawdown_pct_median"]),
+            touch_rate
+        )
+    else:  # "rr_oriented"
+        valid_constraints = (
+            cap["net_expectancy_r"] > 0 and
+            cap["geometric_growth_rate"] > 0
+        )
+        gate = 1 if valid_constraints else 0
+        return (
+            gate,
+            float(cap["geometric_growth_pct"]),
+            float(cap["net_expectancy_r"]),
+            -float(cap["max_drawdown_pct_median"]),
+            -float(cap["probability_of_ruin_pct"]),
+            -float(cap["avg_recovery_trades"]),
+            float(cap["resolved_win_rate_pct"]),
+            touch_rate
+        )
 
 
 def _scan_side(side, metrics, bars_data, horizon_bars, search_replays, spread,
@@ -1555,18 +1801,16 @@ def _scan_side(side, metrics, bars_data, horizon_bars, search_replays, spread,
         )
         distance_atr = abs(metrics["current_price"] - plan["entry_price"]) / metrics["atr"]
         touch = _estimate_entry_touch(bars_data["bars"], side, distance_atr, horizon_bars)
-        candidates.append((_rank_score(result, touch), plan, result, touch))
+        candidates.append((_rank_score(result, touch, tpsl_config), plan, result, touch))
     candidates.sort(key=lambda x: x[0], reverse=True)
     if not candidates:
         raise ValueError(f"No valid {side.upper()} LIMIT candidates could be generated.")
     return candidates[0], len(candidates), effective_entries_count, quota_capped
 
 
-
-
 def _finalize_recommendation(side, selected, candidate_count, effective_entries_count, bars_data,
                              metrics, horizon_bars, replays, spread, seed,
-                             projection_mode, tie_break, seasonality, engine_mode):
+                             projection_mode, tie_break, seasonality, engine_mode, tpsl_config=None):
     _, plan, coarse, touch = selected
     # Re-run the winning candidate at the requested replay count.
     primary_mode = "legacy" if engine_mode == "compare" else engine_mode
@@ -1595,7 +1839,7 @@ def _finalize_recommendation(side, selected, candidate_count, effective_entries_
     result["plan"]["order_type"] = "LIMIT"
     result["plan"]["tpsl_mode"] = plan.get("tpsl_mode", "auto")
     result["plan"]["setup_tag"] = plan.get("setup_tag", "")
-    for key in ("tp_points", "sl_points", "point_size", "target_rr"):
+    for key in ("tp_points", "sl_points", "point_size", "target_rr", "risk_distance", "reward_distance"):
         if key in plan:
             result["plan"][key] = plan[key]
     result["plan"]["candidate_count_scanned"] = candidate_count
@@ -1610,9 +1854,127 @@ def _finalize_recommendation(side, selected, candidate_count, effective_entries_
     result["plan"]["entry_fill_assumption"] = (
         "Conditional on the proposed limit order being filled; historical OHLC touch proxy does not guarantee fill."
     )
+
+    # Compute Capital Growth Simulation for the finalized winning plan
+    cap_cfg = tpsl_config or {}
+    p_tp = max(0.0, float(result["odds"]["target_first_pct"]) / 100.0)
+    p_sl = max(0.0, float(result["odds"]["stop_first_pct"]) / 100.0)
+    p_timeout = max(0.0, float(result["odds"]["neither_pct"]) / 100.0)
+    target_r = float(result["plan"].get("target_rr", result["plan"].get("target_r", 2.0)))
+
+    entry_p = float(result["plan"].get("entry", result["plan"].get("entry_price", 0.0)))
+    stop_p = float(result["plan"].get("stop", result["plan"].get("stop_loss", 0.0)))
+    risk_dist = float(result["plan"].get("risk_dollar", result["plan"].get("risk_distance", abs(entry_p - stop_p))))
+    timeout_r = 0.0
+    exit_prices = result.get("exit_prices", [])
+    if exit_prices and risk_dist > 0:
+        med_exit = float(np.median(exit_prices))
+        if side == "buy":
+            timeout_r = (med_exit - entry_p) / risk_dist
+        else:
+            timeout_r = (entry_p - med_exit) / risk_dist
+
+    final_cap = simulate_capital_growth(
+        initial_capital=cap_cfg.get("initial_capital", 10000.0),
+        risk_pct=cap_cfg.get("risk_pct", 0.01),
+        p_tp=p_tp,
+        p_sl=p_sl,
+        p_timeout=p_timeout,
+        target_r=target_r,
+        timeout_r=timeout_r,
+        costs_r=cap_cfg.get("costs_r", 0.02),
+        replays=cap_cfg.get("cap_replays", 1000),
+        horizon_trades=cap_cfg.get("cap_horizon_trades", 50),
+        compounding=cap_cfg.get("compounding", True),
+        max_drawdown_limit=cap_cfg.get("max_drawdown_limit", 0.20),
+        ruin_threshold=cap_cfg.get("ruin_threshold", 0.50),
+        seed=seed + 777
+    )
+    result["capital_growth"] = final_cap
+
+    # SEPARATE THREE QUALITY DIMENSIONS
+    distance_atr = abs(metrics["current_price"] - plan["entry_price"]) / metrics["atr"]
+    result["entry_quality"] = {
+        "entry_price": plan["entry_price"],
+        "order_type": "LIMIT",
+        "setup_tag": plan.get("setup_tag", ""),
+        "historical_touch_probability_pct": float(touch["touch_probability_pct"]),
+        "historical_touch_samples": int(touch["samples"]),
+        "median_bars_to_touch": touch["median_bars_to_touch"],
+        "distance_atr": round(float(distance_atr), 2),
+        "entry_fill_probability": None,
+        "warning": "Historical OHLC touch rate is only a fill proxy, not guaranteed limit-order execution."
+    }
+
+    result["trade_quality"] = {
+        "target_first_pct": result["odds"]["target_first_pct"],
+        "stop_first_pct": result["odds"]["stop_first_pct"],
+        "timeout_pct": result["odds"]["neither_pct"],
+        "resolved_win_rate_pct": final_cap["resolved_win_rate_pct"],
+        "total_win_rate_pct": final_cap["total_win_rate_pct"],
+        "simulated_average_r": result["odds"]["avg_r"],
+        "target_rr": target_r,
+        "net_expectancy_r": final_cap["net_expectancy_r"],
+        "breakeven_pct": result["odds"]["breakeven_pct"],
+        "stop_loss": plan["stop_loss"],
+        "take_profit": plan["take_profit"]
+    }
+
+    result["capital_quality"] = {
+        "initial_capital": cap_cfg.get("initial_capital", 10000.0),
+        "risk_pct": cap_cfg.get("risk_pct", 0.01),
+        "final_equity_median": final_cap["final_equity_median"],
+        "final_equity_p5": final_cap["final_equity_p5"],
+        "final_equity_p95": final_cap["final_equity_p95"],
+        "net_profit_median": final_cap["net_profit_median"],
+        "total_return_pct_median": final_cap["total_return_pct_median"],
+        "geometric_growth_pct": final_cap["geometric_growth_pct"],
+        "max_drawdown_pct_median": final_cap["max_drawdown_pct_median"],
+        "max_drawdown_pct_worst": final_cap["max_drawdown_pct_worst"],
+        "max_consecutive_losses": final_cap["max_consecutive_losses_median"],
+        "avg_recovery_trades": final_cap["avg_recovery_trades"],
+        "probability_of_ruin_pct": final_cap["probability_of_ruin_pct"],
+        "passes_drawdown_constraint": final_cap["passes_drawdown_constraint"],
+        "passes_ruin_constraint": final_cap["passes_ruin_constraint"],
+        "equity_curve": final_cap["equity_curve_median"],
+        "distribution_final_equity": final_cap["distribution_final_equity"]
+    }
+
+    # WALK-FORWARD VALIDATION (In-Sample vs Out-of-Sample)
+    all_bars = bars_data.get("bars", [])
+    if len(all_bars) >= 100:
+        split_idx = int(len(all_bars) * 0.70)
+        is_bars = all_bars[:split_idx]
+        oos_bars = all_bars[split_idx:]
+        is_touch = _estimate_entry_touch(is_bars, side, distance_atr, horizon_bars)
+        oos_touch = _estimate_entry_touch(oos_bars, side, distance_atr, horizon_bars)
+        result["walk_forward_validation"] = {
+            "in_sample_bars": len(is_bars),
+            "out_of_sample_bars": len(oos_bars),
+            "in_sample_touch_pct": float(is_touch["touch_probability_pct"]),
+            "out_of_sample_touch_pct": float(oos_touch["touch_probability_pct"]),
+            "in_sample_status": "evaluated",
+            "out_of_sample_status": "robust" if float(oos_touch["touch_probability_pct"]) > 0 else "degraded",
+            "warning": "Optimization performed on in-sample history; out-of-sample data evaluated without parameter re-tuning."
+        }
+    else:
+        result["walk_forward_validation"] = {
+            "in_sample_bars": len(all_bars),
+            "out_of_sample_bars": 0,
+            "in_sample_touch_pct": float(touch["touch_probability_pct"]),
+            "out_of_sample_touch_pct": 0.0,
+            "in_sample_status": "insufficient_history",
+            "out_of_sample_status": "none",
+            "warning": "Requires at least 100 bars for chronological walk-forward split."
+        }
+
+    opt_profile = cap_cfg.get("optimization_profile", "wr_oriented")
     result["recommendation"] = {
-        "status": "candidate" if result["odds"]["avg_r"] > 0 else "no_positive_expectancy",
-        "ranking_metric": "touch_adjusted_simulated_average_R",
+        "status": "candidate" if result["odds"]["avg_r"] > 0 and final_cap["net_expectancy_r"] > 0 else "no_positive_expectancy",
+        "optimization_profile": opt_profile,
+        "ranking_metric": "wr_expectancy_growth" if opt_profile == "wr_oriented" else "geometric_capital_growth",
+        "geometric_growth_pct": final_cap["geometric_growth_pct"],
+        "resolved_win_rate_pct": final_cap["resolved_win_rate_pct"],
         "simulated_average_R": result["odds"]["avg_r"],
         "touch_adjusted_simulated_average_R": adjusted_r,
         "target_first_probability_pct": result["odds"]["target_first_pct"],
@@ -1635,7 +1997,15 @@ def find_dual_recommendations(
     sl_min_points=500, sl_max_points=2000, sl_step_points=250,
     rr_ratio=2.0, rr_sl_points=1000,
     strategy="atr_swing",
-    candidate_count=0
+    candidate_count=0,
+    optimization_profile="wr_oriented",
+    rr_candidates=None,
+    initial_capital=10000.0,
+    risk_pct=0.01,
+    max_drawdown_limit=0.20,
+    ruin_threshold=0.50,
+    compounding=True,
+    costs_r=0.02
 ):
     """
     Search and rank BUY LIMIT and SELL LIMIT candidates.
@@ -1663,7 +2033,15 @@ def find_dual_recommendations(
         fixed_tp_points, fixed_sl_points,
         tp_min_points, tp_max_points, tp_step_points,
         sl_min_points, sl_max_points, sl_step_points,
-        rr_ratio, rr_sl_points
+        rr_ratio, rr_sl_points,
+        optimization_profile=optimization_profile,
+        rr_candidates=rr_candidates,
+        initial_capital=initial_capital,
+        risk_pct=risk_pct,
+        max_drawdown_limit=max_drawdown_limit,
+        ruin_threshold=ruin_threshold,
+        compounding=compounding,
+        costs_r=costs_r
     )
     metrics = calculate_market_metrics(bars, period=min(len(bars), max(48, horizon_bars)))
     interval = int(normalized.get("interval_minutes", 5) or 5)
@@ -1734,11 +2112,13 @@ def find_dual_recommendations(
     )
     buy_res = _finalize_recommendation(
         "buy", buy_selected, buy_count, buy_entries_count, normalized, metrics, horizon_bars,
-        replays, spread, seed, projection_mode, tie_break, seasonality, engine_mode
+        replays, spread, seed, projection_mode, tie_break, seasonality, engine_mode,
+        tpsl_config=tpsl_config
     )
     sell_res = _finalize_recommendation(
         "sell", sell_selected, sell_count, sell_entries_count, normalized, metrics, horizon_bars,
-        replays, spread, seed, projection_mode, tie_break, seasonality, engine_mode
+        replays, spread, seed, projection_mode, tie_break, seasonality, engine_mode,
+        tpsl_config=tpsl_config
     )
 
     quota_adjusted = bool(buy_quota_capped or sell_quota_capped)

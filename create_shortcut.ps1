@@ -3,9 +3,10 @@ $shortcutPath = Join-Path $desktop "Monte Carlo.lnk"
 $wsh = New-Object -ComObject WScript.Shell
 $shortcut = $wsh.CreateShortcut($shortcutPath)
 
-# Otomatis deteksi folder versi terbaru di D:\Monte Carlo
-$baseDir = "D:\Monte Carlo"
-$latestVersionDir = Get-ChildItem -Path $baseDir -Directory -Filter "Monte Carlo 2*" |
+# Otomatis deteksi folder versi terbaru (prioritas: D:\Time Machine, D:\Monte Carlo, atau script directory)
+$baseDir = if (Test-Path "D:\Time Machine") { "D:\Time Machine" } elseif (Test-Path "D:\Monte Carlo") { "D:\Monte Carlo" } else { $PSScriptRoot }
+$latestVersionDir = Get-ChildItem -Path $baseDir -Directory -Filter "Monte Carlo *" |
+    Where-Object { $_.Name -match "^Monte Carlo \d+" } |
     Sort-Object Name -Descending |
     Select-Object -First 1
 
@@ -35,7 +36,7 @@ if (-not (Test-Path $iconPath)) {
     $iconPath = Join-Path $baseDir "assets\gold_icon.ico"
 }
 $shortcut.IconLocation = "$iconPath,0"
-$shortcut.Description = "Monte Carlo ($versionName) - Statistical Odds Simulation Engine"
+$shortcut.Description = "Monte Carlo ($versionName) - Statistical Odds & Capital Growth Engine"
 $shortcut.Save()
 
 Write-Host "Desktop shortcut created successfully at: $shortcutPath -> $targetDir ($versionName)"

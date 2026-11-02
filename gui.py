@@ -28,6 +28,7 @@ import timemachine
 import engine_v2
 import mt5_connector
 import analyzer
+import combination_engine
 
 DARK_BG = "#0b0f17"
 PANEL_BG = "#131822"
@@ -133,11 +134,20 @@ class TimeMachineProGUI:
         self._cached_vis_price_range = 80.0
         self._cached_vis_steps = 72
 
+        # Quant Profile & Capital Growth Simulation Variables
+        self.opt_profile_var = tk.StringVar(value="WR Oriented")
+        self.risk_pct_var = tk.StringVar(value="1.0")
+        self.initial_capital_var = tk.StringVar(value="10000")
+        self.max_dd_limit_var = tk.StringVar(value="20.0")
+        self.ruin_threshold_var = tk.StringVar(value="50.0")
+        self.rr_candidates_var = tk.StringVar(value="1:1, 1:1.5, 1:2, 1:3, 1:4, 1:5, 1:7, 1:10")
+
         # Configure taskbar integration for frameless window
         self._setup_taskbar()
 
-        # Build UI - Unified Chrome-style Header & Body
+        # Build UI - Header, Bottom Dock, and Center Canvas Body
         self._build_chrome_toolbar()
+        self._build_bottom_dock()
         self._build_main_body()
 
         # Load saved settings if any
@@ -170,6 +180,74 @@ class TimeMachineProGUI:
             self.root.after(10, lambda: self.root.wm_deiconify())
         except Exception:
             pass
+
+    # ========================== BOTTOM CONTROL & ACTION DOCK ==========================
+    def _build_bottom_dock(self):
+        """Bottom Dock: relocates action buttons and hosts Quant Profile and Capital Growth controls."""
+        self.bottom_dock = tk.Frame(self.root, bg="#0d1117", height=46, highlightbackground=BORDER_COL, highlightthickness=1)
+        self.bottom_dock.pack(side=tk.BOTTOM, fill=tk.X)
+        self.bottom_dock.pack_propagate(False)
+
+        # Left Zone: Quant Profile & Quick Capital Risk
+        left_dock = tk.Frame(self.bottom_dock, bg="#0d1117")
+        left_dock.pack(side=tk.LEFT, fill=tk.Y, padx=(10, 6), pady=4)
+
+        tk.Label(left_dock, text="🎯 Profile:", font=("Segoe UI", 8, "bold"), fg=GOLD, bg="#0d1117").pack(side=tk.LEFT, padx=(0, 4))
+        self.opt_profile_combo = ttk.Combobox(
+            left_dock, textvariable=self.opt_profile_var,
+            values=["WR Oriented", "RR Oriented"],
+            state="readonly", font=("Segoe UI", 8, "bold"), width=12
+        )
+        self.opt_profile_combo.pack(side=tk.LEFT, padx=(0, 8), fill=tk.Y)
+        self.opt_profile_combo.bind("<<ComboboxSelected>>", lambda e: self.execute_auto_scan() if self.active_mode == "auto" else None)
+
+        tk.Label(left_dock, text="Risk %:", font=("Segoe UI", 8), fg=TEXT_MUTED, bg="#0d1117").pack(side=tk.LEFT, padx=(0, 2))
+        self.risk_pct_entry = tk.Entry(left_dock, textvariable=self.risk_pct_var, width=4, font=("Segoe UI", 8), bg=INPUT_BG, fg=TEXT_PRIMARY, insertbackground=TEXT_PRIMARY, relief=tk.FLAT)
+        self.risk_pct_entry.pack(side=tk.LEFT, padx=(0, 6), ipady=2)
+
+        tk.Label(left_dock, text="Capital ($):", font=("Segoe UI", 8), fg=TEXT_MUTED, bg="#0d1117").pack(side=tk.LEFT, padx=(0, 2))
+        self.initial_capital_entry = tk.Entry(left_dock, textvariable=self.initial_capital_var, width=7, font=("Segoe UI", 8), bg=INPUT_BG, fg=TEXT_PRIMARY, insertbackground=TEXT_PRIMARY, relief=tk.FLAT)
+        self.initial_capital_entry.pack(side=tk.LEFT, padx=(0, 10), ipady=2)
+
+        # Center Zone: Real-Time Live Capital HUD
+        center_dock = tk.Frame(self.bottom_dock, bg="#0d1117")
+        center_dock.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        self.lbl_dock_hud = tk.Label(
+            center_dock,
+            text="Monte Carlo 3.01 Quant Engine Ready | Sequential Compounding & TP/SL Optimizer Active",
+            font=("Segoe UI", 8), fg=TEXT_MUTED, bg="#0d1117"
+        )
+        self.lbl_dock_hud.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Right Zone: Action Buttons
+        right_dock = tk.Frame(self.bottom_dock, bg="#0d1117")
+        right_dock.pack(side=tk.RIGHT, fill=tk.Y, padx=(6, 10), pady=4)
+
+        self.btn_bottom_zoom_reset = tk.Button(
+            right_dock, text="🔍 Reset Zoom", font=("Segoe UI", 8),
+            bg=INPUT_BG, fg=TEXT_MUTED, activebackground=CARD_BG, activeforeground=TEXT_PRIMARY,
+            relief=tk.FLAT, cursor="hand2", padx=6, pady=2, bd=0,
+            command=self._reset_chart_zoom
+        )
+        self.btn_bottom_zoom_reset.pack(side=tk.LEFT, padx=(0, 4), fill=tk.Y)
+
+        self.btn_bottom_settings = tk.Button(
+            right_dock, text="⚙ TP/SL & Risk Settings", font=("Segoe UI", 8),
+            bg=INPUT_BG, fg=TEXT_PRIMARY, activebackground=CARD_BG, activeforeground="#ffffff",
+            relief=tk.FLAT, cursor="hand2", padx=8, pady=2, bd=0,
+            command=self._open_settings_modal
+        )
+        self.btn_bottom_settings.pack(side=tk.LEFT, padx=(0, 6), fill=tk.Y)
+
+        self.btn_bottom_scan = tk.Button(
+            right_dock, text="⚡ SCAN DUAL SETUPS", font=("Segoe UI", 9, "bold"),
+            bg=GOLD, fg="#0b0f17", activebackground=GOLD_HOVER, activeforeground="#ffffff",
+            relief=tk.FLAT, cursor="hand2", padx=12, pady=2, bd=0,
+            command=self.execute_auto_scan
+        )
+        self.btn_bottom_scan.pack(side=tk.LEFT, fill=tk.Y)
+
 
     # ========================== CHROME-STYLE INTEGRATED TOOLBAR ==========================
     def _build_chrome_toolbar(self):
@@ -304,6 +382,7 @@ class TimeMachineProGUI:
             return b
 
         self.btn_gear_settings = make_tool_icon("⚙", "Global Settings", self._open_settings_modal)
+        self.btn_matrix_modal = make_tool_icon("🧮", "20-Combination Matrix", self._open_combination_matrix_modal, col=GREEN)
         self.btn_copy_signals = make_tool_icon("📋", "Copy Setup Signals", self._copy_signals_to_clipboard)
         self.import_mt5_btn = make_tool_icon("📥", "Impor Posisi MT5", self._open_positions_selector, col=CYAN)
 
@@ -413,6 +492,12 @@ class TimeMachineProGUI:
 
         # Initialize internal variables required by settings & models
         self.horizon_var = tk.StringVar(value="4 Jam (48 bars M5)")
+        self.opt_profile_var = tk.StringVar(value="WR Oriented")
+        self.risk_pct_var = tk.StringVar(value="1.0")
+        self.initial_capital_var = tk.StringVar(value="10000")
+        self.max_dd_limit_var = tk.StringVar(value="20.0")
+        self.ruin_threshold_var = tk.StringVar(value="50.0")
+        self.rr_candidates_var = tk.StringVar(value="1:1, 1:1.5, 1:2, 1:3, 1:4, 1:5, 1:7, 1:10")
         self.spread_var = tk.StringVar(value="0.24")
         self.engine_mode_var = tk.StringVar(value="Legacy V1 (Default)")
         self.proj_mode_var = tk.StringVar(value="Two-Stream Free Drift (Recommended)")
@@ -420,8 +505,10 @@ class TimeMachineProGUI:
         self.seasonality_var = tk.StringVar(value="Off (Default/Asli)")
         self.grid_lines_var = tk.StringVar(value="Dynamic Adaptive (Default)")
 
-        # TP/SL Variables
-        self.tpsl_mode_var = tk.StringVar(value="Auto Optimize")
+        # TP/SL Variables (Opsi Disable TP/SL dan Limit Orders - Default Disabled)
+        self.enable_tpsl_var = tk.BooleanVar(value=False)
+        self.enable_limits_var = tk.BooleanVar(value=False)
+        self.tpsl_mode_var = tk.StringVar(value="Disabled (Murni Sinyal)")
         self.point_size_var = tk.StringVar(value="0.01")
         self.fixed_tp_points_var = tk.StringVar(value="2000")
         self.fixed_sl_points_var = tk.StringVar(value="1000")
@@ -450,7 +537,7 @@ class TimeMachineProGUI:
         self.tb_combo = ttk.Combobox(self.right_panel, textvariable=self.tie_break_var, values=list(TIE_BREAK_MODES.keys()), state="readonly")
         self.seasonality_combo = ttk.Combobox(self.right_panel, textvariable=self.seasonality_var, values=list(SEASONALITY_MODES.keys()), state="readonly")
         self.grid_lines_combo = ttk.Combobox(self.right_panel, textvariable=self.grid_lines_var, values=["Dynamic Adaptive (Default)", "25 Lines", "50 Lines"], state="readonly")
-        self.tpsl_mode_combo = ttk.Combobox(self.right_panel, textvariable=self.tpsl_mode_var, values=["Auto Optimize", "Fixed TP/SL", "TP/SL Range", "Risk Reward"], state="readonly")
+        self.tpsl_mode_combo = ttk.Combobox(self.right_panel, textvariable=self.tpsl_mode_var, values=["Auto Structure & Native", "ATR Adaptive", "RR Sweep (1:1 s/d 1:10)", "Fixed TP/SL", "TP/SL Range Sweep", "Risk Reward (Custom)"], state="readonly")
 
         # Dummy button bindings for data sources (re-used in modal)
         self.btn_src_mt5 = tk.Button(self.right_panel, text="MT5")
@@ -873,22 +960,68 @@ class TimeMachineProGUI:
         self._auto_scan_debounce_timer = self.root.after(450, self.execute_auto_scan)
 
     def _get_tpsl_scan_params(self):
-        mode = {
+        mode_str = self.tpsl_mode_var.get()
+        mode_map = {
             "Auto Optimize": "auto",
+            "Auto Structure & Native": "auto",
+            "ATR Adaptive": "atr",
             "Fixed TP/SL": "fixed",
             "TP/SL Range": "range",
-            "Risk Reward": "risk_reward"
-        }.get(self.tpsl_mode_var.get(), "auto")
-        params = {"tpsl_mode": mode}
+            "TP/SL Range Sweep": "range",
+            "Risk Reward": "risk_reward",
+            "RR Sweep (1:1 s/d 1:10)": "rr_sweep"
+        }
+        mode = mode_map.get(mode_str, "auto")
+        
+        # Profile & Capital Risk Configuration
+        opt_profile = "wr_oriented" if "wr" in self.opt_profile_var.get().lower() else "rr_oriented"
+        try:
+            risk_pct = float(str(self.risk_pct_var.get()).replace("%", "").strip()) / 100.0
+        except Exception:
+            risk_pct = 0.01
+
+        try:
+            init_cap = float(str(self.initial_capital_var.get()).replace("$", "").replace(",", "").strip())
+        except Exception:
+            init_cap = 10000.0
+
+        try:
+            max_dd = float(str(self.max_dd_limit_var.get()).replace("%", "").strip()) / 100.0
+        except Exception:
+            max_dd = 0.20
+
+        try:
+            ruin_th = float(str(self.ruin_threshold_var.get()).replace("%", "").strip()) / 100.0
+        except Exception:
+            ruin_th = 0.50
+
+        params = {
+            "tpsl_mode": mode,
+            "optimization_profile": opt_profile,
+            "initial_capital": init_cap,
+            "risk_pct": risk_pct,
+            "max_drawdown_limit": max_dd,
+            "ruin_threshold": ruin_th,
+            "compounding": True,
+            "costs_r": 0.02
+        }
+
         if mode != "auto":
-            params["point_size"] = float(self.point_size_var.get().strip())
-            self._point_size_custom = True
+            try:
+                params["point_size"] = float(self.point_size_var.get().strip())
+                self._point_size_custom = True
+            except Exception:
+                params["point_size"] = 0.01
+
         if mode == "fixed":
             params["fixed_tp_points"] = int(self.fixed_tp_points_var.get().strip())
             params["fixed_sl_points"] = int(self.fixed_sl_points_var.get().strip())
         elif mode == "risk_reward":
             params["rr_ratio"] = self._parse_rr_ratio(self.rr_ratio_var.get())
             params["rr_sl_points"] = int(self.rr_sl_points_var.get().strip())
+        elif mode == "rr_sweep":
+            params["rr_sl_points"] = int(self.rr_sl_points_var.get().strip())
+            params["rr_candidates"] = [1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 7.0, 10.0]
         elif mode == "range":
             params.update({
                 "tp_min_points": int(self.tp_min_points_var.get().strip()),
@@ -1101,6 +1234,26 @@ class TimeMachineProGUI:
         self.dual_results = res
         best_dir = res["best_direction"]
         summary = res["summary"]
+
+        # Update Bottom Dock Live Capital HUD
+        try:
+            rec = res.get(best_dir.lower(), res.get("buy", {}))
+            cq = rec.get("capital_quality", {})
+            tq = rec.get("trade_quality", {})
+            wf = rec.get("walk_forward_validation", {})
+            hud_txt = (
+                f"[{res.get('strategy_label', 'Strategy')}] Best: {best_dir} | "
+                f"Resolved WR: {tq.get('resolved_win_rate_pct', 0.0):.1f}% | "
+                f"Target RR: 1:{tq.get('target_rr', 2.0):g} | "
+                f"Geom Growth: {cq.get('geometric_growth_pct', 0.0):+.2f}%/tr | "
+                f"MaxDD: {cq.get('max_drawdown_pct_median', 0.0):.1f}% | "
+                f"Ruin: {cq.get('probability_of_ruin_pct', 0.0):.1f}% | "
+                f"OOS: {wf.get('out_of_sample_status', 'N/A').upper()}"
+            )
+            if hasattr(self, "lbl_dock_hud"):
+                self.lbl_dock_hud.configure(text=hud_txt, fg=GOLD if best_dir == "BUY" else (RED if best_dir == "SELL" else TEXT_MUTED))
+        except Exception:
+            pass
 
         # Update Summary Banner
         col = GREEN if best_dir == "BUY" else (RED if best_dir == "SELL" else GOLD)
@@ -1533,26 +1686,30 @@ class TimeMachineProGUI:
                 canvas.create_text(x_px, h - pad_bottom + 12, text=t_lbl, fill=TEXT_MUTED, font=("Segoe UI", 8))
 
         # 8. Target, Stop, Entry lines & off-screen markers
-        y_tp = to_y(target)
-        if pad_top <= y_tp <= h - pad_bottom:
-            canvas.create_line(pad_left, y_tp, w - pad_right, y_tp, fill=GREEN, width=2, dash=(6, 4))
-            canvas.create_text(w - pad_right - 6, y_tp - 10, text=f"TP ${target:.2f} (+{plan.get('target_r', 0.0):.2f}R)", fill=GREEN, font=("Segoe UI", 9, "bold"), anchor="e")
-        elif y_tp < pad_top:
-            canvas.create_text(w - pad_right - 6, pad_top + 12, text=f"▲ TP ${target:.2f} (+{plan.get('target_r', 0.0):.1f}R)", fill=GREEN, font=("Segoe UI", 8, "bold"), anchor="e")
-        elif y_tp > h - pad_bottom:
-            canvas.create_text(w - pad_right - 6, h - pad_bottom - 12, text=f"▼ TP ${target:.2f} (+{plan.get('target_r', 0.0):.1f}R)", fill=GREEN, font=("Segoe UI", 8, "bold"), anchor="e")
+        # Jika TP/SL didisable (atau target/stop bernilai None / sama dengan entry), jangan gambar garis TP/SL
+        has_tpsl = getattr(self, "enable_tpsl_var", None) and self.enable_tpsl_var.get()
+        if target is not None and stop is not None and has_tpsl:
+            y_tp = to_y(target)
+            if pad_top <= y_tp <= h - pad_bottom:
+                canvas.create_line(pad_left, y_tp, w - pad_right, y_tp, fill=GREEN, width=2, dash=(6, 4))
+                canvas.create_text(w - pad_right - 6, y_tp - 10, text=f"TP ${target:.2f} (+{plan.get('target_r', 0.0):.2f}R)", fill=GREEN, font=("Segoe UI", 9, "bold"), anchor="e")
+            elif y_tp < pad_top:
+                canvas.create_text(w - pad_right - 6, pad_top + 12, text=f"▲ TP ${target:.2f} (+{plan.get('target_r', 0.0):.1f}R)", fill=GREEN, font=("Segoe UI", 8, "bold"), anchor="e")
+            elif y_tp > h - pad_bottom:
+                canvas.create_text(w - pad_right - 6, h - pad_bottom - 12, text=f"▼ TP ${target:.2f} (+{plan.get('target_r', 0.0):.1f}R)", fill=GREEN, font=("Segoe UI", 8, "bold"), anchor="e")
 
-        y_sl = to_y(stop)
-        if pad_top <= y_sl <= h - pad_bottom:
-            canvas.create_line(pad_left, y_sl, w - pad_right, y_sl, fill=RED, width=2, dash=(6, 4))
-            canvas.create_text(w - pad_right - 6, y_sl + 10, text=f"SL ${stop:.2f} (-1.0R)", fill=RED, font=("Segoe UI", 9, "bold"), anchor="e")
-        elif y_sl < pad_top:
-            canvas.create_text(w - pad_right - 6, pad_top + 24, text=f"▲ SL ${stop:.2f} (-1.0R)", fill=RED, font=("Segoe UI", 8, "bold"), anchor="e")
-        elif y_sl > h - pad_bottom:
-            canvas.create_text(w - pad_right - 6, h - pad_bottom - 24, text=f"▼ SL ${stop:.2f} (-1.0R)", fill=RED, font=("Segoe UI", 8, "bold"), anchor="e")
+            y_sl = to_y(stop)
+            if pad_top <= y_sl <= h - pad_bottom:
+                canvas.create_line(pad_left, y_sl, w - pad_right, y_sl, fill=RED, width=2, dash=(6, 4))
+                canvas.create_text(w - pad_right - 6, y_sl + 10, text=f"SL ${stop:.2f} (-1.0R)", fill=RED, font=("Segoe UI", 9, "bold"), anchor="e")
+            elif y_sl < pad_top:
+                canvas.create_text(w - pad_right - 6, pad_top + 24, text=f"▲ SL ${stop:.2f} (-1.0R)", fill=RED, font=("Segoe UI", 8, "bold"), anchor="e")
+            elif y_sl > h - pad_bottom:
+                canvas.create_text(w - pad_right - 6, h - pad_bottom - 24, text=f"▼ SL ${stop:.2f} (-1.0R)", fill=RED, font=("Segoe UI", 8, "bold"), anchor="e")
 
         y_en = to_y(entry)
-        limit_lbl = "Buy Limit" if is_buy else "Sell Limit"
+        has_limits = getattr(self, "enable_limits_var", None) and self.enable_limits_var.get()
+        limit_lbl = ("Buy Limit" if is_buy else "Sell Limit") if has_limits else ("BUY SIGNAL" if is_buy else "SELL SIGNAL")
         tag_str = f" [{plan['setup_tag']}]" if plan.get("setup_tag") else ""
         if pad_top <= y_en <= h - pad_bottom:
             canvas.create_line(pad_left, y_en, w - pad_right, y_en, fill="#ffffff", width=1, dash=(3, 3))
@@ -1793,10 +1950,26 @@ class TimeMachineProGUI:
         tab_tpsl = tk.Frame(notebook, bg=PANEL_BG, padx=14, pady=12)
         notebook.add(tab_tpsl, text=" 🎯 TP / SL Search ")
 
+        chk_tpsl = tk.Checkbutton(
+            tab_tpsl, text="Aktifkan Proyeksi TP / SL (Default: Dinonaktifkan)",
+            variable=self.enable_tpsl_var, font=("Segoe UI", 9, "bold"),
+            fg=GOLD, bg=PANEL_BG, selectcolor=CARD_BG, activebackground=PANEL_BG, activeforeground=GOLD,
+            command=lambda: [self._draw_dual_charts(), self.execute_auto_scan() if self.active_mode == "auto" else None]
+        )
+        chk_tpsl.pack(anchor="w", pady=(0, 6))
+
+        chk_limits = tk.Checkbutton(
+            tab_tpsl, text="Gunakan Pending Limit Offset (Uncheck: Sinyal Market Close)",
+            variable=self.enable_limits_var, font=("Segoe UI", 8),
+            fg=TEXT_MUTED, bg=PANEL_BG, selectcolor=CARD_BG, activebackground=PANEL_BG, activeforeground=TEXT_PRIMARY,
+            command=lambda: [self._draw_dual_charts(), self.execute_auto_scan() if self.active_mode == "auto" else None]
+        )
+        chk_limits.pack(anchor="w", pady=(0, 10))
+
         tk.Label(tab_tpsl, text="DUAL AUTO TP / SL METHOD", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=PANEL_BG).pack(anchor="w", pady=(0, 4))
         self.tpsl_mode_combo = ttk.Combobox(
             tab_tpsl, textvariable=self.tpsl_mode_var,
-            values=["Auto Optimize", "Fixed TP/SL", "TP/SL Range", "Risk Reward"],
+            values=["Disabled (Murni Sinyal)", "Auto Optimize", "Fixed TP/SL", "TP/SL Range", "Risk Reward"],
             state="readonly", font=("Segoe UI", 8)
         )
         self.tpsl_mode_combo.pack(fill=tk.X, pady=(0, 10))
@@ -1834,6 +2007,97 @@ class TimeMachineProGUI:
             bg=GOLD, fg="#0b0f17", relief=tk.FLAT, cursor="hand2", padx=12, pady=4,
             command=lambda: [self._save_settings(), modal.destroy()]
         ).pack(side=tk.RIGHT)
+
+    def _open_combination_matrix_modal(self):
+        """Displays FASE 1: Pure Statistical Alpha & Forward Edge Profiler (MFE, MAE, Edge Ratio, Directional Accuracy)."""
+        modal = tk.Toplevel(self.root)
+        modal.title("FASE 1: Combination Engine - Pure Forward Edge & Alpha Profiler")
+        modal.geometry("1060x640")
+        modal.configure(bg=DARK_BG)
+        modal.transient(self.root)
+
+        header = tk.Frame(modal, bg=PANEL_BG, padx=14, pady=10)
+        header.pack(fill=tk.X)
+        tk.Label(
+            header, text="🔬 FASE 1: PURE ENTRY ALPHA & FORWARD EDGE PROFILER (NO TP/SL BIAS)",
+            font=("Segoe UI", 11, "bold"), fg=GOLD, bg=PANEL_BG
+        ).pack(side=tk.LEFT)
+
+        strat_val = self.strategy_var.get()
+        tk.Label(
+            header, text=f"Strategy: {strat_val} | Evaluation: Strictly Post-Close Forward Movement",
+            font=("Segoe UI", 9), fg=TEXT_MUTED, bg=PANEL_BG
+        ).pack(side=tk.RIGHT)
+
+        body = tk.Frame(modal, bg=DARK_BG, padx=12, pady=10)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        cols = (
+            "ID", "Param 1", "Param 2",
+            "BUY N", "BUY Fwd(ATR)", "BUY MFE", "BUY MAE", "BUY EdgeRatio", "BUY Acc%",
+            "SELL N", "SELL Fwd(ATR)", "SELL MFE", "SELL MAE", "SELL EdgeRatio", "SELL Acc%", "Stability"
+        )
+        tree = ttk.Treeview(body, columns=cols, show="headings", height=18)
+        for c in cols:
+            tree.heading(c, text=c)
+            width = 55 if "ID" in c or "Param" in c or "N" in c else 68
+            tree.column(c, width=width, anchor=tk.CENTER)
+
+        scrollbar = ttk.Scrollbar(body, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscroll=scrollbar.set)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        status_lbl = tk.Label(modal, text="⏳ Menghitung forward edge murni (MFE, MAE, Forward Return)...", font=("Segoe UI", 9), fg=CYAN, bg=DARK_BG)
+        status_lbl.pack(side=tk.BOTTOM, pady=6)
+
+        def worker():
+            strategy_code = {
+                "ATR Pullback & Swing (Default)": "atr_swing",
+                "Breakout + POC Retest": "poc",
+                "Liquidity Sweep + FVG": "fvg",
+                "Session ORB (Asia/London/NY)": "orb",
+                "Bollinger Extremes (Z-Score)": "zscore",
+                "Accumulation + Inverse FVG (IFVG)": "acc_ifvg",
+                "Liquidity Sweep + Shift Structure (SMS)": "sweep_sms",
+                "Liquidity Absorption + Volume Bubbles": "absorption",
+                "Order Flow Footprint Proxy": "footprint"
+            }.get(strat_val, "absorption")
+
+            try:
+                res = combination_engine.evaluate_combination_forward_edge(
+                    strategy_code, self.bars_data, side="both", horizons=[3, 6, 12, 24, 48]
+                )
+                
+                def update_ui():
+                    for item in tree.get_children():
+                        tree.delete(item)
+                    for r in res.get("results", []):
+                        cid = r["config_id"]
+                        p = r["params"]
+                        p1_val = list(p.values())[2] if len(p) > 2 else "-"
+                        p2_val = list(p.values())[3] if len(p) > 3 else "-"
+                        b = r.get("buy") or {}
+                        s = r.get("sell") or {}
+
+                        b_edge = b.get("edge_ratio", 0.0)
+                        s_edge = s.get("edge_ratio", 0.0)
+                        stab = (b.get("stability_score", 0.0) + s.get("stability_score", 0.0)) / 2.0
+
+                        row = (
+                            cid, str(p1_val), str(p2_val),
+                            b.get("signals", 0), f"{b.get('avg_forward_return', 0.0):+.2f}", f"{b.get('avg_mfe', 0.0):.2f}", f"{b.get('avg_mae', 0.0):.2f}", f"{b_edge:.2f}x", f"{b.get('directional_accuracy_pct', 0.0):.1f}%",
+                            s.get("signals", 0), f"{s.get('avg_forward_return', 0.0):+.2f}", f"{s.get('avg_mfe', 0.0):.2f}", f"{s.get('avg_mae', 0.0):.2f}", f"{s_edge:.2f}x", f"{s.get('directional_accuracy_pct', 0.0):.1f}%",
+                            f"{stab:.2f}"
+                        )
+                        tree.insert("", tk.END, values=row)
+                    status_lbl.configure(text=f"✅ Selesai mengevaluasi FASE 1: 20 konfigurasi {strategy_code.upper()} murni forward edge tanpa TP/SL.", fg=GREEN)
+
+                self.root.after(0, update_ui)
+            except Exception as e:
+                self.root.after(0, lambda err=e: status_lbl.configure(text=f"❌ Error evaluasi Fase 1: {err}", fg=RED))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _copy_signals_to_clipboard(self):
         """Format the active dual auto scan setups and odds into clipboard."""

@@ -22,11 +22,17 @@ jobs:
         run: python -m pip install --upgrade pip numpy
       - name: Run root unit tests with virtual display
         run: xvfb-run -a python -m unittest discover -s tests -v
+      - name: Verify compilation for root
+        run: python -m py_compile engine_v2.py analyzer.py gui.py timemachine.py combination_engine.py capital_growth.py
       - name: Run Monte Carlo 2.01 tests with virtual display
         working-directory: ./Monte Carlo 2.01
         run: xvfb-run -a python -m unittest discover -s tests -v
-      - name: Verify compilation for root
-        run: python -m py_compile engine_v2.py analyzer.py gui.py timemachine.py
       - name: Verify compilation for Monte Carlo 2.01
         working-directory: ./Monte Carlo 2.01
         run: python -m py_compile engine_v2.py analyzer.py gui.py timemachine.py combination_engine.py
+      - name: Run Monte Carlo 3.01 tests with virtual display
+        working-directory: ./Monte Carlo 3.01
+        run: xvfb-run -a python -m unittest discover -s tests -v
+      - name: Verify compilation for Monte Carlo 3.01
+        working-directory: ./Monte Carlo 3.01
+        run: python -m py_compile engine_v2.py analyzer.py gui.py timemachine.py combination_engine.py capital_growth.py
