@@ -228,6 +228,7 @@ class TimeMachineProGUI:
             right_dock, text="🔍 Reset Zoom", font=("Segoe UI", 8),
             bg=INPUT_BG, fg=TEXT_MUTED, activebackground=CARD_BG, activeforeground=TEXT_PRIMARY,
             relief=tk.FLAT, cursor="hand2", padx=6, pady=2, bd=0,
+            highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=TEXT_PRIMARY,
             command=self._reset_chart_zoom
         )
         self.btn_bottom_zoom_reset.pack(side=tk.LEFT, padx=(0, 4), fill=tk.Y)
@@ -236,6 +237,7 @@ class TimeMachineProGUI:
             right_dock, text="📊 Quant Tiers", font=("Segoe UI", 8, "bold"),
             bg=INPUT_BG, fg=GOLD, activebackground=CARD_BG, activeforeground="#ffffff",
             relief=tk.FLAT, cursor="hand2", padx=8, pady=2, bd=0,
+            highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD,
             command=self._open_quant_ranking_tiers_modal
         )
         self.btn_bottom_quant_tiers.pack(side=tk.LEFT, padx=(0, 4), fill=tk.Y)
@@ -244,6 +246,7 @@ class TimeMachineProGUI:
             right_dock, text="⚙ Settings", font=("Segoe UI", 8),
             bg=INPUT_BG, fg=TEXT_PRIMARY, activebackground=CARD_BG, activeforeground="#ffffff",
             relief=tk.FLAT, cursor="hand2", padx=8, pady=2, bd=0,
+            highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=TEXT_PRIMARY,
             command=self._open_settings_modal
         )
         self.btn_bottom_settings.pack(side=tk.LEFT, padx=(0, 6), fill=tk.Y)
@@ -252,6 +255,7 @@ class TimeMachineProGUI:
             right_dock, text="⚡ SCAN DUAL SETUPS", font=("Segoe UI", 9, "bold"),
             bg=GOLD, fg="#0b0f17", activebackground=GOLD_HOVER, activeforeground="#ffffff",
             relief=tk.FLAT, cursor="hand2", padx=12, pady=2, bd=0,
+            highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=TEXT_PRIMARY,
             command=self.execute_auto_scan
         )
         self.btn_bottom_scan.pack(side=tk.LEFT, fill=tk.Y)
