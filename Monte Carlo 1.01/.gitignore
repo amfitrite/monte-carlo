@@ -1,0 +1,20 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Market data caches & user settings (auto-generated on run)
+data_cache*.json
+app_settings.json
+
+# Virtual environment
+venv/
+env/
+.env
+
+# Backups
+old version/
+
+# Editor files
+.vscode/
+.idea/
