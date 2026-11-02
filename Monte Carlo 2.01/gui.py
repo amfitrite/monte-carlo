@@ -28,6 +28,7 @@ import timemachine
 import engine_v2
 import mt5_connector
 import analyzer
+import combination_engine
 
 DARK_BG = "#0b0f17"
 PANEL_BG = "#131822"
@@ -304,6 +305,7 @@ class TimeMachineProGUI:
             return b
 
         self.btn_gear_settings = make_tool_icon("⚙", "Global Settings", self._open_settings_modal)
+        self.btn_matrix_modal = make_tool_icon("🧮", "20-Combination Matrix", self._open_combination_matrix_modal, col=GREEN)
         self.btn_copy_signals = make_tool_icon("📋", "Copy Setup Signals", self._copy_signals_to_clipboard)
         self.import_mt5_btn = make_tool_icon("📥", "Impor Posisi MT5", self._open_positions_selector, col=CYAN)
 
@@ -1834,6 +1836,91 @@ class TimeMachineProGUI:
             bg=GOLD, fg="#0b0f17", relief=tk.FLAT, cursor="hand2", padx=12, pady=4,
             command=lambda: [self._save_settings(), modal.destroy()]
         ).pack(side=tk.RIGHT)
+
+    def _open_combination_matrix_modal(self):
+        """Displays full 5x4 (20 Configurations) Sensitivity Matrix with Expectancy, Winrate, Fill Rate, and Tail Risk."""
+        modal = tk.Toplevel(self.root)
+        modal.title("20-Combination Sensitivity Matrix (Monte Carlo V2.01)")
+        modal.geometry("980x620")
+        modal.configure(bg=DARK_BG)
+        modal.transient(self.root)
+
+        header = tk.Frame(modal, bg=PANEL_BG, padx=14, pady=10)
+        header.pack(fill=tk.X)
+        tk.Label(
+            header, text="🧮 20-COMBINATION SENSITIVITY MATRIX & MONTE CARLO EVALUATOR",
+            font=("Segoe UI", 11, "bold"), fg=GOLD, bg=PANEL_BG
+        ).pack(side=tk.LEFT)
+
+        strat_val = self.strategy_var.get()
+        tk.Label(
+            header, text=f"Strategy: {strat_val}", font=("Segoe UI", 9), fg=TEXT_MUTED, bg=PANEL_BG
+        ).pack(side=tk.RIGHT)
+
+        body = tk.Frame(modal, bg=DARK_BG, padx=12, pady=10)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        cols = ("ID", "Param 1", "Param 2", "BUY Signals", "BUY Fill%", "BUY Win%", "BUY Exp(R)", "SELL Signals", "SELL Fill%", "SELL Win%", "SELL Exp(R)", "Worst DD(R)")
+        tree = ttk.Treeview(body, columns=cols, show="headings", height=18)
+        for c in cols:
+            tree.heading(c, text=c)
+            width = 65 if "ID" in c or "Param" in c else 80
+            tree.column(c, width=width, anchor=tk.CENTER)
+
+        scrollbar = ttk.Scrollbar(body, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscroll=scrollbar.set)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        status_lbl = tk.Label(modal, text="⏳ Menghitung 20 kombinasi sensitivitas...", font=("Segoe UI", 9), fg=CYAN, bg=DARK_BG)
+        status_lbl.pack(side=tk.BOTTOM, pady=6)
+
+        def worker():
+            strategy_code = {
+                "ATR Pullback & Swing (Default)": "atr_swing",
+                "Breakout + POC Retest": "poc",
+                "Liquidity Sweep + FVG": "fvg",
+                "Session ORB (Asia/London/NY)": "orb",
+                "Bollinger Extremes (Z-Score)": "zscore",
+                "Accumulation + Inverse FVG (IFVG)": "acc_ifvg",
+                "Liquidity Sweep + Shift Structure (SMS)": "sweep_sms",
+                "Liquidity Absorption + Volume Bubbles": "absorption",
+                "Order Flow Footprint Proxy": "footprint"
+            }.get(strat_val, "absorption")
+
+            try:
+                spread = float(self.spread_var.get() or 0.25)
+                horizon = self._get_selected_horizon_bars()
+                res = combination_engine.evaluate_combination_monte_carlo(
+                    strategy_code, self.bars_data, side="both", replays=300, horizon_bars=horizon, spread=spread
+                )
+                
+                def update_ui():
+                    for item in tree.get_children():
+                        tree.delete(item)
+                    for r in res.get("results", []):
+                        cid = r["config_id"]
+                        p = r["params"]
+                        p1_val = list(p.values())[2] if len(p) > 2 else "-"
+                        p2_val = list(p.values())[3] if len(p) > 3 else "-"
+                        b = r.get("buy") or {}
+                        s = r.get("sell") or {}
+
+                        worst_dd = max(b.get("max_drawdown_r", 0.0), s.get("max_drawdown_r", 0.0))
+                        row = (
+                            cid, str(p1_val), str(p2_val),
+                            b.get("signals", 0), f"{b.get('fill_rate', 0.0):.1f}%", f"{b.get('win_rate', 0.0):.1f}%", f"{b.get('expectancy_r', 0.0):+.2f}R",
+                            s.get("signals", 0), f"{s.get('fill_rate', 0.0):.1f}%", f"{s.get('win_rate', 0.0):.1f}%", f"{s.get('expectancy_r', 0.0):+.2f}R",
+                            f"-{worst_dd:.1f}R"
+                        )
+                        tree.insert("", tk.END, values=row)
+                    status_lbl.configure(text=f"✅ Selesai mengevaluasi 20 konfigurasi {strategy_code.upper()} secara terpisah (BUY & SELL).", fg=GREEN)
+
+                self.root.after(0, update_ui)
+            except Exception as e:
+                self.root.after(0, lambda err=e: status_lbl.configure(text=f"❌ Error kalkulasi: {err}", fg=RED))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _copy_signals_to_clipboard(self):
         """Format the active dual auto scan setups and odds into clipboard."""
