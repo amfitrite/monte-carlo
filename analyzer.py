@@ -1805,7 +1805,7 @@ def _scan_side(side, metrics, bars_data, horizon_bars, search_replays, spread,
     candidates.sort(key=lambda x: x[0], reverse=True)
     if not candidates:
         raise ValueError(f"No valid {side.upper()} LIMIT candidates could be generated.")
-    return candidates[0], len(candidates), effective_entries_count, quota_capped
+    return candidates[0], len(candidates), effective_entries_count, quota_capped, candidates
 
 
 def _finalize_recommendation(side, selected, candidate_count, effective_entries_count, bars_data,
@@ -1922,6 +1922,7 @@ def _finalize_recommendation(side, selected, candidate_count, effective_entries_
 
     result["capital_quality"] = {
         "initial_capital": cap_cfg.get("initial_capital", 10000.0),
+        "net_expectancy_r": float(final_cap.get("net_expectancy_r", result["odds"]["avg_r"])),
         "risk_pct": cap_cfg.get("risk_pct", 0.01),
         "final_equity_median": final_cap["final_equity_median"],
         "final_equity_p5": final_cap["final_equity_p5"],
@@ -2100,12 +2101,12 @@ def find_dual_recommendations(
     search_replays = min(replays, 600)
     primary_mode = "legacy" if engine_mode == "compare" else engine_mode
 
-    buy_selected, buy_count, buy_entries_count, buy_quota_capped = _scan_side(
+    buy_selected, buy_count, buy_entries_count, buy_quota_capped, buy_all_cands = _scan_side(
         "buy", metrics, normalized, horizon_bars, search_replays, spread, seed,
         projection_mode, tie_break, seasonality, primary_mode, tpsl_config,
         strategy=normalized_strategy, candidate_count=candidate_count
     )
-    sell_selected, sell_count, sell_entries_count, sell_quota_capped = _scan_side(
+    sell_selected, sell_count, sell_entries_count, sell_quota_capped, sell_all_cands = _scan_side(
         "sell", metrics, normalized, horizon_bars, search_replays, spread, seed + 1000,
         projection_mode, tie_break, seasonality, primary_mode, tpsl_config,
         strategy=normalized_strategy, candidate_count=candidate_count
@@ -2127,27 +2128,219 @@ def find_dual_recommendations(
         else {"buy": buy_entries_count, "sell": sell_entries_count}
     )
 
+    # Format candidate helper for multi-tier quant output
+    def _format_cand(cand):
+        score, plan, r_one, touch_stat = cand
+        cg = r_one.get("capital_growth", {})
+        odds_d = r_one.get("odds", {})
+        return {
+            "side": plan["side"].upper(),
+            "entry_price": float(plan["entry_price"]),
+            "stop_loss": float(plan["stop_loss"]),
+            "take_profit": float(plan["take_profit"]),
+            "target_rr": float(plan.get("target_rr", odds_d.get("target_r", 2.0))),
+            "setup_tag": plan.get("setup_tag", ""),
+            "touch_probability_pct": float(touch_stat.get("touch_probability_pct", 0.0)),
+            "target_first_pct": float(odds_d.get("target_first_pct", 0.0)),
+            "stop_first_pct": float(odds_d.get("stop_first_pct", 0.0)),
+            "timeout_pct": float(odds_d.get("neither_pct", 0.0)),
+            "resolved_win_rate_pct": float(cg.get("resolved_win_rate_pct", 0.0)),
+            "geometric_growth_pct": float(cg.get("geometric_growth_pct", 0.0)),
+            "net_expectancy_r": float(cg.get("net_expectancy_r", odds_d.get("avg_r", 0.0))),
+            "max_drawdown_pct": float(cg.get("max_drawdown_pct_median", 0.0)),
+            "probability_of_ruin_pct": float(cg.get("probability_of_ruin_pct", 0.0)),
+            "is_viable": bool((score[0] == 1) if isinstance(score, tuple) else (odds_d.get("avg_r", 0.0) > 0))
+        }
+
+    all_cands_combined = buy_all_cands + sell_all_cands
+
+    # TIER 1: Candidate Ranking (Sorted by Active Profile Score)
+    all_sorted_profile = sorted(all_cands_combined, key=lambda x: x[0], reverse=True)
+    tier1_candidate_rankings = []
+    for idx, c in enumerate(all_sorted_profile):
+        item = _format_cand(c)
+        item["rank"] = idx + 1
+        tier1_candidate_rankings.append(item)
+
+    # TIER 2: Equity Growth Ranking (Strictly Sorted by Geometric Growth with Positive Expectancy Gate)
+    all_sorted_growth = sorted(
+        all_cands_combined,
+        key=lambda c: (
+            1 if c[2].get("capital_growth", {}).get("net_expectancy_r", 0) > 0 else 0,
+            c[2].get("capital_growth", {}).get("geometric_growth_pct", -999.0),
+            c[2].get("capital_growth", {}).get("net_expectancy_r", -999.0)
+        ),
+        reverse=True
+    )
+    tier2_growth_rankings = []
+    for idx, c in enumerate(all_sorted_growth):
+        item = _format_cand(c)
+        item["growth_rank"] = idx + 1
+        tier2_growth_rankings.append(item)
+
+    # TIER 3: Best Recommendation Determination (Consistent with Active Quant Profile)
+    opt_profile = tpsl_config.get("optimization_profile", "wr_oriented")
+    buy_cq = buy_res.get("capital_quality", {})
+    sell_cq = sell_res.get("capital_quality", {})
+    buy_tq = buy_res.get("trade_quality", {})
+    sell_tq = sell_res.get("trade_quality", {})
+
     buy_r = float(buy_res["plan"]["fill_adjusted_simulated_avg_r"])
     sell_r = float(sell_res["plan"]["fill_adjusted_simulated_avg_r"])
-    viable_buy, viable_sell = buy_r > 0, sell_r > 0
-    if not viable_buy and not viable_sell:
-        best_dir = "NO TRADE"
-        summary = (
-            f"Belum ada setup BUY/SELL dengan simulated expectancy positif "
-            f"(BUY {buy_r:+.2f}R; SELL {sell_r:+.2f}R). Tidak ada rekomendasi entry aktif."
+
+    buy_exp = float(buy_cq.get("net_expectancy_r", buy_tq.get("net_expectancy_r", buy_res["odds"]["avg_r"])))
+    sell_exp = float(sell_cq.get("net_expectancy_r", sell_tq.get("net_expectancy_r", sell_res["odds"]["avg_r"])))
+    buy_geom = float(buy_cq.get("geometric_growth_pct", 0.0))
+    sell_geom = float(sell_cq.get("geometric_growth_pct", 0.0))
+    buy_wr = float(buy_tq.get("resolved_win_rate_pct", buy_res["odds"].get("target_first_pct", 0.0)))
+    sell_wr = float(sell_tq.get("resolved_win_rate_pct", sell_res["odds"].get("target_first_pct", 0.0)))
+
+    if opt_profile == "wr_oriented":
+        viable_buy = (
+            buy_exp > 0 and
+            buy_geom > 0 and
+            buy_cq.get("passes_drawdown_constraint", True) and
+            buy_cq.get("passes_ruin_constraint", True) and
+            buy_res["odds"]["avg_r"] > 0
         )
-    elif viable_buy and viable_sell and abs(buy_r - sell_r) < 0.03:
-        best_dir = "EQUAL"
-        summary = (
-            f"BUY dan SELL sama-sama memiliki simulated expectancy positif dan relatif seimbang "
-            f"(BUY {buy_r:+.2f}R; SELL {sell_r:+.2f}R). Tunggu konfirmasi kondisi pasar."
+        viable_sell = (
+            sell_exp > 0 and
+            sell_geom > 0 and
+            sell_cq.get("passes_drawdown_constraint", True) and
+            sell_cq.get("passes_ruin_constraint", True) and
+            sell_res["odds"]["avg_r"] > 0
         )
-    elif viable_buy and (not viable_sell or buy_r > sell_r):
-        best_dir = "BUY"
-        summary = f"BUY LIMIT menjadi kandidat teratas ({buy_r:+.2f}R vs SELL {sell_r:+.2f}R)."
+
+        if not viable_buy and not viable_sell:
+            best_dir = "NO TRADE"
+            summary = (
+                f"Belum ada setup BUY/SELL yang memenuhi kriteria WR Oriented dengan expectancy & pertumbuhan modal positif "
+                f"(BUY NetExp {buy_exp:+.2f}R, Geom {buy_geom:+.2f}%; "
+                f"SELL NetExp {sell_exp:+.2f}R, Geom {sell_geom:+.2f}%). Tidak ada rekomendasi aktif."
+            )
+        elif viable_buy and not viable_sell:
+            best_dir = "BUY"
+            summary = (
+                f"BUY LIMIT terpilih sebagai rekomendasi utama WR Oriented (Resolved WR {buy_wr:.1f}%, "
+                f"Geom Growth {buy_geom:+.2f}%/trade, NetExp {buy_exp:+.2f}R; SELL tidak memenuhi batas risiko)."
+            )
+        elif viable_sell and not viable_buy:
+            best_dir = "SELL"
+            summary = (
+                f"SELL LIMIT terpilih sebagai rekomendasi utama WR Oriented (Resolved WR {sell_wr:.1f}%, "
+                f"Geom Growth {sell_geom:+.2f}%/trade, NetExp {sell_exp:+.2f}R; BUY tidak memenuhi batas risiko)."
+            )
+        else:
+            # Ranking priorities: 1. Win Rate, 2. Geometric Equity Growth, 3. Expectancy
+            if abs(buy_wr - sell_wr) < 1.0:
+                if abs(buy_geom - sell_geom) < 0.05:
+                    if abs(buy_exp - sell_exp) < 0.01 and abs(buy_r - sell_r) < 0.01:
+                        best_dir = "EQUAL"
+                        summary = (
+                            f"BUY dan SELL sama-sama memenuhi syarat WR Oriented dengan win rate seimbang "
+                            f"(BUY {buy_wr:.1f}% vs SELL {sell_wr:.1f}%) dan pertumbuhan modal positif seimbang. Tunggu konfirmasi arah pasar."
+                        )
+                    elif buy_exp > sell_exp or (abs(buy_exp - sell_exp) < 0.01 and buy_r > sell_r):
+                        best_dir = "BUY"
+                        summary = (
+                            f"BUY LIMIT unggul pada expectancy ({buy_exp:+.3f}R vs SELL {sell_exp:+.3f}R) "
+                            f"pada win rate ({buy_wr:.1f}% vs {sell_wr:.1f}%) dan pertumbuhan modal seimbang ({buy_geom:+.2f}%/trade)."
+                        )
+                    else:
+                        best_dir = "SELL"
+                        summary = (
+                            f"SELL LIMIT unggul pada expectancy ({sell_exp:+.3f}R vs BUY {buy_exp:+.3f}R) "
+                            f"pada win rate ({sell_wr:.1f}% vs {buy_wr:.1f}%) dan pertumbuhan modal seimbang ({sell_geom:+.2f}%/trade)."
+                        )
+                elif buy_geom > sell_geom:
+                    best_dir = "BUY"
+                    summary = (
+                        f"BUY LIMIT unggul pada pertumbuhan modal ({buy_geom:+.2f}%/trade vs SELL {sell_geom:+.2f}%/trade) "
+                        f"pada win rate relatif seimbang ({buy_wr:.1f}% vs {sell_wr:.1f}%)."
+                    )
+                else:
+                    best_dir = "SELL"
+                    summary = (
+                        f"SELL LIMIT unggul pada pertumbuhan modal ({sell_geom:+.2f}%/trade vs BUY {buy_geom:+.2f}%/trade) "
+                        f"pada win rate relatif seimbang ({sell_wr:.1f}% vs {buy_wr:.1f}%)."
+                    )
+            elif buy_wr > sell_wr:
+                best_dir = "BUY"
+                summary = (
+                    f"BUY LIMIT menjadi rekomendasi utama WR Oriented dengan resolved win rate tertinggi ({buy_wr:.1f}% vs SELL {sell_wr:.1f}%), "
+                    f"pertumbuhan modal {buy_geom:+.2f}%/trade, dan expectancy {buy_exp:+.2f}R."
+                )
+            else:
+                best_dir = "SELL"
+                summary = (
+                    f"SELL LIMIT menjadi rekomendasi utama WR Oriented dengan resolved win rate tertinggi ({sell_wr:.1f}% vs BUY {buy_wr:.1f}%), "
+                    f"pertumbuhan modal {sell_geom:+.2f}%/trade, dan expectancy {sell_exp:+.2f}R."
+                )
+
     else:
-        best_dir = "SELL"
-        summary = f"SELL LIMIT menjadi kandidat teratas ({sell_r:+.2f}R vs BUY {buy_r:+.2f}R)."
+        # RR Oriented: maximize sustainable geometric equity growth
+        viable_buy = (
+            buy_exp > 0 and
+            buy_geom > 0 and
+            buy_res["odds"]["avg_r"] > 0
+        )
+        viable_sell = (
+            sell_exp > 0 and
+            sell_geom > 0 and
+            sell_res["odds"]["avg_r"] > 0
+        )
+
+        if not viable_buy and not viable_sell:
+            best_dir = "NO TRADE"
+            summary = (
+                f"Belum ada setup BUY/SELL dengan pertumbuhan modal geometrik positif "
+                f"(BUY {buy_geom:+.2f}%/trade; SELL {sell_geom:+.2f}%/trade). Tidak ada rekomendasi aktif."
+            )
+        elif viable_buy and not viable_sell:
+            best_dir = "BUY"
+            summary = (
+                f"BUY LIMIT menjadi kandidat teratas RR Oriented dengan pertumbuhan modal geometrik "
+                f"{buy_geom:+.2f}%/trade (SELL tidak menghasilkan pertumbuhan modal positif)."
+            )
+        elif viable_sell and not viable_buy:
+            best_dir = "SELL"
+            summary = (
+                f"SELL LIMIT menjadi kandidat teratas RR Oriented dengan pertumbuhan modal geometrik "
+                f"{sell_geom:+.2f}%/trade (BUY tidak menghasilkan pertumbuhan modal positif)."
+            )
+        else:
+            # Ranking priorities: 1. Geometric Growth, 2. Net Expectancy
+            if abs(buy_geom - sell_geom) < 0.05:
+                if abs(buy_exp - sell_exp) < 0.01 and abs(buy_r - sell_r) < 0.01:
+                    best_dir = "EQUAL"
+                    summary = (
+                        f"BUY dan SELL menghasilkan pertumbuhan modal geometrik seimbang "
+                        f"(BUY {buy_geom:+.2f}%/trade vs SELL {sell_geom:+.2f}%/trade). Tunggu konfirmasi kondisi pasar."
+                    )
+                elif buy_exp > sell_exp or (abs(buy_exp - sell_exp) < 0.01 and buy_r > sell_r):
+                    best_dir = "BUY"
+                    summary = (
+                        f"BUY LIMIT unggul pada expectancy ({buy_exp:+.3f}R vs SELL {sell_exp:+.3f}R) "
+                        f"dengan pertumbuhan modal geometrik seimbang ({buy_geom:+.2f}%/trade)."
+                    )
+                else:
+                    best_dir = "SELL"
+                    summary = (
+                        f"SELL LIMIT unggul pada expectancy ({sell_exp:+.3f}R vs BUY {buy_exp:+.3f}R) "
+                        f"dengan pertumbuhan modal geometrik seimbang ({sell_geom:+.2f}%/trade)."
+                    )
+            elif buy_geom > sell_geom:
+                best_dir = "BUY"
+                summary = (
+                    f"BUY LIMIT menjadi rekomendasi utama RR Oriented dengan pertumbuhan modal geometrik tertinggi "
+                    f"({buy_geom:+.2f}%/trade vs SELL {sell_geom:+.2f}%/trade, Target RR 1:{buy_tq.get('target_rr', 2.0):g}, Net Exp {buy_exp:+.2f}R)."
+                )
+            else:
+                best_dir = "SELL"
+                summary = (
+                    f"SELL LIMIT menjadi rekomendasi utama RR Oriented dengan pertumbuhan modal geometrik tertinggi "
+                    f"({sell_geom:+.2f}%/trade vs BUY {buy_geom:+.2f}%/trade, Target RR 1:{sell_tq.get('target_rr', 2.0):g}, Net Exp {sell_exp:+.2f}R)."
+                )
 
     if engine_mode == "compare":
         summary += (
@@ -2163,7 +2356,11 @@ def find_dual_recommendations(
     elif tpsl_config["mode"] == "fixed":
         tpsl_label = f"Fixed TP {tpsl_config['tp_points']} / SL {tpsl_config['sl_points']} points"
     elif tpsl_config["mode"] == "risk_reward":
-        tpsl_label = f"Risk Reward 1:{tpsl_config['rr_ratio']:g} (TP {tpsl_config['tp_points']} / SL {tpsl_config['sl_points']} pts)"
+        tpsl_label = f"Risk Reward 1:{tpsl_config.get('rr_ratio', 2.0):g} (TP {tpsl_config.get('tp_points', 2000)} / SL {tpsl_config.get('sl_points', 1000)} pts)"
+    elif tpsl_config["mode"] == "atr":
+        tpsl_label = "ATR Adaptive TP/SL"
+    elif tpsl_config["mode"] == "rr_sweep":
+        tpsl_label = "RR Sweep (1:1 s/d 1:10)"
     else:
         tpsl_label = (
             f"TP range {tpsl_config['tp_values'][0]}-{tpsl_config['tp_values'][-1]}; "
@@ -2171,6 +2368,15 @@ def find_dual_recommendations(
         )
     tpsl_report = dict(tpsl_config)
     tpsl_report["label"] = tpsl_label
+
+    best_rec = {
+        "direction": best_dir,
+        "optimization_profile": opt_profile,
+        "summary": summary,
+        "selected_plan": buy_res["plan"] if best_dir == "BUY" else (sell_res["plan"] if best_dir == "SELL" else None),
+        "selected_result": buy_res if best_dir == "BUY" else (sell_res if best_dir == "SELL" else None)
+    }
+
     return {
         "metrics": metrics,
         "best_direction": best_dir,
@@ -2179,6 +2385,14 @@ def find_dual_recommendations(
         "strategy": normalized_strategy,
         "strategy_label": strategy_label,
         "tpsl_config": tpsl_report,
+        "candidate_rankings": tier1_candidate_rankings,
+        "equity_growth_rankings": tier2_growth_rankings,
+        "best_recommendation": best_rec,
+        "quant_tiers": {
+            "tier_1_candidate_ranking": tier1_candidate_rankings,
+            "tier_2_equity_growth_ranking": tier2_growth_rankings,
+            "tier_3_best_recommendation": best_rec
+        },
         "search": {
             "strategy": strategy_label,
             "method": f"{strategy_label} candidate grid",
@@ -2190,9 +2404,10 @@ def find_dual_recommendations(
             "entry_quota_adjusted": quota_adjusted,
             "buy_candidates_scanned": buy_count,
             "sell_candidates_scanned": sell_count,
+            "total_candidates_scanned": buy_count + sell_count,
             "search_replays_per_candidate": search_replays,
             "final_replays": replays,
-            "ranking": "touch-adjusted simulated average R; target probability and RR are secondary descriptors",
+            "ranking": "quant profile optimization ranking; tier 1 candidate ranking, tier 2 equity growth ranking, tier 3 best recommendation",
             "fill_model": "historical_ohlc_touch_proxy_not_broker_fill_probability"
         },
         "buy": buy_res,

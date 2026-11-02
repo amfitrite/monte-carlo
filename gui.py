@@ -232,8 +232,16 @@ class TimeMachineProGUI:
         )
         self.btn_bottom_zoom_reset.pack(side=tk.LEFT, padx=(0, 4), fill=tk.Y)
 
+        self.btn_bottom_quant_tiers = tk.Button(
+            right_dock, text="📊 Quant Tiers", font=("Segoe UI", 8, "bold"),
+            bg=INPUT_BG, fg=GOLD, activebackground=CARD_BG, activeforeground="#ffffff",
+            relief=tk.FLAT, cursor="hand2", padx=8, pady=2, bd=0,
+            command=self._open_quant_ranking_tiers_modal
+        )
+        self.btn_bottom_quant_tiers.pack(side=tk.LEFT, padx=(0, 4), fill=tk.Y)
+
         self.btn_bottom_settings = tk.Button(
-            right_dock, text="⚙ TP/SL & Risk Settings", font=("Segoe UI", 8),
+            right_dock, text="⚙ Settings", font=("Segoe UI", 8),
             bg=INPUT_BG, fg=TEXT_PRIMARY, activebackground=CARD_BG, activeforeground="#ffffff",
             relief=tk.FLAT, cursor="hand2", padx=8, pady=2, bd=0,
             command=self._open_settings_modal
@@ -2007,6 +2015,158 @@ class TimeMachineProGUI:
             bg=GOLD, fg="#0b0f17", relief=tk.FLAT, cursor="hand2", padx=12, pady=4,
             command=lambda: [self._save_settings(), modal.destroy()]
         ).pack(side=tk.RIGHT)
+
+    # ========================== THREE-TIER QUANT RANKING MODAL ==========================
+    def _open_quant_ranking_tiers_modal(self):
+        """Displays the 3 Tiers of Quant Output: Candidate Ranking, Equity Growth Ranking, and Best Recommendation."""
+        if not self.dual_results or "candidate_rankings" not in self.dual_results:
+            messagebox.showinfo("Quant Ranking Tiers", "Silakan klik 'SCAN DUAL SETUPS' terlebih dahulu untuk menghasilkan evaluasi ranking kuantitatif.")
+            return
+
+        modal = tk.Toplevel(self.root)
+        modal.title("📊 Quant Ranking Tiers: Candidate Ranking, Equity Growth & Best Recommendation")
+        modal.geometry("1120x680")
+        modal.configure(bg=DARK_BG)
+        modal.transient(self.root)
+
+        header = tk.Frame(modal, bg=PANEL_BG, padx=14, pady=10)
+        header.pack(fill=tk.X)
+        tk.Label(
+            header, text="📊 TIGA TINGKAT OUTPUT QUANT (MONTE CARLO 3.01)",
+            font=("Segoe UI", 11, "bold"), fg=GOLD, bg=PANEL_BG
+        ).pack(side=tk.LEFT)
+
+        opt_prof = self.dual_results.get("tpsl_config", {}).get("optimization_profile", self.opt_profile_var.get() if hasattr(self, "opt_profile_var") else "wr_oriented")
+        best_dir = self.dual_results.get("best_direction", "N/A")
+        tk.Label(
+            header, text=f"Profile: {opt_prof.upper()} | Best Direction: {best_dir}",
+            font=("Segoe UI", 9, "bold"), fg=GREEN if best_dir == "BUY" else (RED if best_dir == "SELL" else TEXT_MUTED), bg=PANEL_BG
+        ).pack(side=tk.RIGHT)
+
+        notebook = ttk.Notebook(modal)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=12, pady=10)
+
+        cols = ("Rank", "Side", "Entry", "SL", "TP", "RR", "Tag", "Touch%", "Resolved WR%", "Geom Growth%/tr", "Net Exp (R)", "Max DD%", "Ruin%", "Viable")
+
+        # Tab 1: Candidate Ranking (Profile-Sorted)
+        tab_cand = tk.Frame(notebook, bg=DARK_BG, padx=8, pady=8)
+        notebook.add(tab_cand, text=" 1. Candidate Ranking (Profile-Sorted) ")
+
+        tree1 = ttk.Treeview(tab_cand, columns=cols, show="headings", height=20)
+        for c in cols:
+            tree1.heading(c, text=c)
+            w = 50 if c in ("Rank", "Side", "RR", "Viable") else (80 if "Tag" in c or "Geom" in c else 65)
+            tree1.column(c, width=w, anchor=tk.CENTER)
+        sc1 = ttk.Scrollbar(tab_cand, orient=tk.VERTICAL, command=tree1.yview)
+        tree1.configure(yscroll=sc1.set)
+        tree1.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sc1.pack(side=tk.RIGHT, fill=tk.Y)
+
+        for item in self.dual_results.get("candidate_rankings", []):
+            tree1.insert("", tk.END, values=(
+                item["rank"], item["side"], f"{item['entry_price']:.2f}",
+                f"{item['stop_loss']:.2f}", f"{item['take_profit']:.2f}",
+                f"1:{item['target_rr']:g}", item["setup_tag"] or "N/A",
+                f"{item['touch_probability_pct']:.1f}%", f"{item['resolved_win_rate_pct']:.1f}%",
+                f"{item['geometric_growth_pct']:+.2f}%", f"{item['net_expectancy_r']:+.3f}R",
+                f"{item['max_drawdown_pct']:.1f}%", f"{item['probability_of_ruin_pct']:.1f}%",
+                "YES" if item["is_viable"] else "NO"
+            ))
+
+        # Tab 2: Equity Growth Ranking (Strictly Sorted by Compound Growth)
+        tab_growth = tk.Frame(notebook, bg=DARK_BG, padx=8, pady=8)
+        notebook.add(tab_growth, text=" 2. Equity Growth Ranking (Pure Compound Growth) ")
+
+        tree2 = ttk.Treeview(tab_growth, columns=cols, show="headings", height=20)
+        for c in cols:
+            tree2.heading(c, text=c)
+            w = 50 if c in ("Rank", "Side", "RR", "Viable") else (80 if "Tag" in c or "Geom" in c else 65)
+            tree2.column(c, width=w, anchor=tk.CENTER)
+        sc2 = ttk.Scrollbar(tab_growth, orient=tk.VERTICAL, command=tree2.yview)
+        tree2.configure(yscroll=sc2.set)
+        tree2.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sc2.pack(side=tk.RIGHT, fill=tk.Y)
+
+        for item in self.dual_results.get("equity_growth_rankings", []):
+            tree2.insert("", tk.END, values=(
+                item.get("growth_rank", 1), item["side"], f"{item['entry_price']:.2f}",
+                f"{item['stop_loss']:.2f}", f"{item['take_profit']:.2f}",
+                f"1:{item['target_rr']:g}", item["setup_tag"] or "N/A",
+                f"{item['touch_probability_pct']:.1f}%", f"{item['resolved_win_rate_pct']:.1f}%",
+                f"{item['geometric_growth_pct']:+.2f}%", f"{item['net_expectancy_r']:+.3f}R",
+                f"{item['max_drawdown_pct']:.1f}%", f"{item['probability_of_ruin_pct']:.1f}%",
+                "YES" if item["is_viable"] else "NO"
+            ))
+
+        # Tab 3: Best Recommendation Details
+        tab_best = tk.Frame(notebook, bg=DARK_BG, padx=14, pady=14)
+        notebook.add(tab_best, text=" 3. Best Recommendation Details ")
+
+        best_rec = self.dual_results.get("best_recommendation", {})
+        dir_val = best_rec.get("direction", "NO TRADE")
+        summary_txt = self.dual_results.get("summary", "")
+
+        tk.Label(tab_best, text=f"ARAH REKOMENDASI UTAMA: {dir_val}", font=("Segoe UI", 13, "bold"),
+                 fg=GREEN if dir_val == "BUY" else (RED if dir_val == "SELL" else GOLD), bg=DARK_BG).pack(anchor="w", pady=(0, 6))
+
+        tk.Label(tab_best, text=summary_txt, font=("Segoe UI", 9), fg=TEXT_PRIMARY, bg=DARK_BG, wraplength=980, justify=tk.LEFT).pack(anchor="w", pady=(0, 14))
+
+        rec_target = self.dual_results.get(dir_val.lower(), self.dual_results.get("buy", {}))
+        if rec_target and "capital_quality" in rec_target:
+            eq = rec_target.get("entry_quality", {})
+            tq = rec_target.get("trade_quality", {})
+            cq = rec_target.get("capital_quality", {})
+            wf = rec_target.get("walk_forward_validation", {})
+
+            cards_box = tk.Frame(tab_best, bg=DARK_BG)
+            cards_box.pack(fill=tk.BOTH, expand=True)
+
+            def make_card(parent, title, lines_dict):
+                card = tk.Frame(parent, bg=CARD_BG, padx=12, pady=10, highlightbackground=BORDER_COL, highlightthickness=1)
+                card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4)
+                tk.Label(card, text=title, font=("Segoe UI", 9, "bold"), fg=GOLD, bg=CARD_BG).pack(anchor="w", pady=(0, 8))
+                for k, v in lines_dict.items():
+                    row = tk.Frame(card, bg=CARD_BG)
+                    row.pack(fill=tk.X, pady=2)
+                    tk.Label(row, text=k, font=("Segoe UI", 8), fg=TEXT_MUTED, bg=CARD_BG).pack(side=tk.LEFT)
+                    tk.Label(row, text=str(v), font=("Segoe UI", 8, "bold"), fg=TEXT_PRIMARY, bg=CARD_BG).pack(side=tk.RIGHT)
+
+            make_card(cards_box, "🎯 ENTRY QUALITY", {
+                "Order Type": eq.get("order_type", "LIMIT"),
+                "Entry Price": f"{eq.get('entry_price', 0.0):.2f}",
+                "Touch Prob": f"{eq.get('historical_touch_probability_pct', 0.0):.1f}%",
+                "Touch Samples": eq.get("historical_touch_samples", 0),
+                "Median Bars": eq.get("median_bars_to_touch", 0),
+                "Distance ATR": f"{eq.get('distance_atr', 0.0)} ATR"
+            })
+
+            make_card(cards_box, "🎲 TRADE QUALITY", {
+                "Target RR": f"1:{tq.get('target_rr', 2.0):g}",
+                "Resolved WR": f"{tq.get('resolved_win_rate_pct', 0.0):.1f}%",
+                "Total WR": f"{tq.get('total_win_rate_pct', 0.0):.1f}%",
+                "TP-first Prob": f"{tq.get('target_first_pct', 0.0):.1f}%",
+                "SL-first Prob": f"{tq.get('stop_first_pct', 0.0):.1f}%",
+                "Timeout Prob": f"{tq.get('timeout_pct', 0.0):.1f}%",
+                "Net Exp (R)": f"{tq.get('net_expectancy_r', 0.0):+.3f}R"
+            })
+
+            make_card(cards_box, "💰 CAPITAL QUALITY", {
+                "Geom Growth": f"{cq.get('geometric_growth_pct', 0.0):+.2f}%/trade",
+                "Final Equity Med": f"${cq.get('final_equity_median', 0.0):,.2f}",
+                "Median Max DD": f"{cq.get('max_drawdown_pct_median', 0.0):.1f}%",
+                "Worst Max DD": f"{cq.get('max_drawdown_pct_worst', 0.0):.1f}%",
+                "Ruin Prob": f"{cq.get('probability_of_ruin_pct', 0.0):.1f}%",
+                "Max Consec Loss": cq.get("max_consecutive_losses", 0),
+                "Recovery Trades": f"{cq.get('avg_recovery_trades', 0.0):.1f} tr"
+            })
+
+            make_card(cards_box, "🛡 WALK-FORWARD OOS", {
+                "In-Sample Bars": wf.get("in_sample_bars", 0),
+                "Out-of-Sample Bars": wf.get("out_of_sample_bars", 0),
+                "In-Sample Touch": f"{wf.get('in_sample_touch_pct', 0.0):.1f}%",
+                "OOS Touch": f"{wf.get('out_of_sample_touch_pct', 0.0):.1f}%",
+                "OOS Robustness": str(wf.get("out_of_sample_status", "N/A")).upper()
+            })
 
     def _open_combination_matrix_modal(self):
         """Displays FASE 1: Pure Statistical Alpha & Forward Edge Profiler (MFE, MAE, Edge Ratio, Directional Accuracy)."""

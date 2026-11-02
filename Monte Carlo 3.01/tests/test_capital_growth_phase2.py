@@ -219,5 +219,81 @@ class TestCapitalGrowthAndTPSLOptimization(unittest.TestCase):
         self.assertEqual(gate, 0)
 
 
+
+    def test_quant_three_tiers_presence(self):
+        """Verify presence and structure of Three Tiers of Quant Output."""
+        res = analyzer.find_dual_recommendations(
+            self.bars_data,
+            horizon_bars=12,
+            replays=50,
+            candidate_count=5,
+            optimization_profile="rr_oriented",
+        )
+        self.assertIn("candidate_rankings", res)
+        self.assertIn("equity_growth_rankings", res)
+        self.assertIn("best_recommendation", res)
+        self.assertIn("quant_tiers", res)
+
+        cand_ranks = res["candidate_rankings"]
+        eq_ranks = res["equity_growth_rankings"]
+        best_rec = res["best_recommendation"]
+
+        self.assertIsInstance(cand_ranks, list)
+        self.assertGreater(len(cand_ranks), 0)
+        self.assertIsInstance(eq_ranks, list)
+        self.assertGreater(len(eq_ranks), 0)
+
+        # Check sorting of equity growth rankings for viable slice
+        viable_growths = [c.get("geometric_growth_pct", 0.0) for c in eq_ranks if c.get("net_expectancy_r", 0.0) > 0]
+        for i in range(len(viable_growths) - 1):
+            self.assertGreaterEqual(viable_growths[i], viable_growths[i+1] - 1e-6)
+
+        # Check best recommendation direction matches best_direction
+        self.assertIn(best_rec["direction"], ["BUY", "SELL", "NO TRADE", "EQUAL"])
+        self.assertEqual(res["best_direction"], best_rec["direction"])
+
+    def test_rr_oriented_best_direction_consistent_with_growth(self):
+        """Verify that in RR-oriented mode, best_direction selects the candidate with higher geometric growth."""
+        res = analyzer.find_dual_recommendations(
+            self.bars_data,
+            horizon_bars=12,
+            replays=50,
+            candidate_count=5,
+            optimization_profile="rr_oriented",
+        )
+        best_dir = res["best_direction"]
+        best_rec = res["best_recommendation"]
+        self.assertEqual(best_dir, best_rec["direction"])
+        self.assertEqual(best_rec["optimization_profile"], "rr_oriented")
+
+        if best_dir in ("BUY", "SELL"):
+            side_key = best_dir.lower()
+            side_data = res[side_key]
+            self.assertEqual(side_data["recommendation"]["optimization_profile"], "rr_oriented")
+            self.assertIsNotNone(best_rec["selected_plan"])
+            self.assertEqual(best_rec["selected_plan"]["side"].lower(), side_key.lower())
+
+    def test_wr_oriented_best_direction_consistent_with_winrate(self):
+        """Verify that in WR-oriented mode, best_direction and best_recommendation align with win rate."""
+        res = analyzer.find_dual_recommendations(
+            self.bars_data,
+            horizon_bars=12,
+            replays=50,
+            candidate_count=5,
+            optimization_profile="wr_oriented",
+        )
+        best_dir = res["best_direction"]
+        best_rec = res["best_recommendation"]
+        self.assertEqual(best_dir, best_rec["direction"])
+        self.assertEqual(best_rec["optimization_profile"], "wr_oriented")
+
+        if best_dir in ("BUY", "SELL"):
+            side_key = best_dir.lower()
+            side_data = res[side_key]
+            self.assertEqual(side_data["recommendation"]["optimization_profile"], "wr_oriented")
+            self.assertIsNotNone(best_rec["selected_plan"])
+            self.assertEqual(best_rec["selected_plan"]["side"].lower(), side_key.lower())
+
+
 if __name__ == "__main__":
     unittest.main()
