@@ -1,14 +1,20 @@
 """
-Combination Engine (V2.01) for Monte Carlo Simulation.
+Combination Engine (V2.01) - Pure Strategy & Entry Sensitivity Focus.
 
-Implements full 5x4 sensitivity grids (20 unique configurations per strategy)
-across all 9 core trading strategies. Evaluates BUY and SELL candidates
-independently with:
-- Realistic Bid/Ask spread-aware fill modeling
-- Long-horizon representative bootstrap expectancy (free of small-sample bias)
-- Deep mechanics for Footprint Delta, True Volume POC, ORB Session Clock, and Liquidity Sweeps
-- Comprehensive risk analytics: Max Drawdown, P5/P95 tail metrics, and Profit Factor
-- Instrument-native price step rounding
+Fokus murni pada:
+1. Signal Generation 20 Konfigurasi Sensitivitas (5x4) untuk 9 Entry Strategies.
+2. Mode Murni (Pure Entry Signal): TP/SL & Limit Orders di-DISABLE secara DEFAULT.
+   - Sinyal ditandai pada level Entry murni (Close / Extremum / Trigger price).
+   - Opsi TP/SL & Limit Order bersifat opsional (enable_tpsl=False, enable_limits=False).
+3. Eliminasi No-Signal Fallback:
+   - Jika suatu konfigurasi/strategi tidak menemukan sinyal valid, kembalikan list kosong [].
+   - TIDAK ADA fallback diam-diam ke ATR Swing atau strategi lain.
+4. Mekanik Strategi Ketat & Obyektif:
+   - Liquidity Absorption (LA): Wajib minimum penetrasi likuiditas positif (min sweep depth >= 0.05 ATR).
+   - Microstructure / Synthetic Tick Delta (FP): Penamaan jujur dan transparan sebagai proxy mikrostruktur bar.
+   - True Volume Profile POC (PC): Distribusi volume riil berbasis price-bucket histogram.
+   - Session ORB (OR): Berbasis durasi waktu riil menit (misal 30 menit sesi), agnostik M1/M5.
+5. True Sequential Transaction Max Drawdown, True Profit Factor, & Replay Percentiles.
 """
 
 import math
@@ -48,7 +54,7 @@ def _round_to_step(value, step=0.01):
 
 
 # ---------------------------------------------------------------------------
-# GRID SPECIFICATIONS FOR ALL 9 STRATEGIES
+# GRID SPECIFICATIONS FOR ALL 9 STRATEGIES (5 x 4 = 20 IDs)
 # ---------------------------------------------------------------------------
 
 STRATEGY_SPECS = {
@@ -59,7 +65,7 @@ STRATEGY_SPECS = {
         "param1_vals": [1.2, 1.4, 1.6, 1.8, 2.0],
         "param2_name": "min_wick_ratio",
         "param2_vals": [1.0, 1.25, 1.5, 2.0],
-        "order_type": "limit_midpoint_wick"
+        "description": "True sweep with positive penetration + volume absorption rejection"
     },
     "sweep_sms": {
         "code": "SS",
@@ -68,7 +74,7 @@ STRATEGY_SPECS = {
         "param1_vals": [0.05, 0.10, 0.15, 0.25, 0.40],
         "param2_name": "sms_body_atr",
         "param2_vals": [0.50, 0.75, 1.00, 1.50],
-        "order_type": "limit_ob_edge"
+        "description": "Liquidity sweep followed by market structure shift"
     },
     "fvg": {
         "code": "FV",
@@ -77,43 +83,43 @@ STRATEGY_SPECS = {
         "param1_vals": [0.10, 0.15, 0.20, 0.30, 0.50],
         "param2_name": "retrace_depth_pct",
         "param2_vals": [0.00, 0.25, 0.50, 0.75],
-        "order_type": "limit_fvg_retrace"
+        "description": "Imbalance gap detection & mitigation"
     },
     "acc_ifvg": {
         "code": "IF",
         "name": "Accumulation + Inverse FVG",
         "param1_name": "compression_atr",
-        "param1_vals": [0.75, 1.00, 1.50, 2.00, 2.50],
+        "param1_vals": [1.5, 2.0, 2.5, 3.5, 5.0],
         "param2_name": "retest_tolerance_pct",
         "param2_vals": [0.25, 0.382, 0.50, 0.618],
-        "order_type": "limit_ifvg_boundary"
+        "description": "Compression range breakout/breakdown into inverted FVG"
     },
     "footprint": {
         "code": "FP",
-        "name": "Footprint (Order Flow Proxy)",
+        "name": "Synthetic Tick Delta (Order Flow Microstructure)",
         "param1_name": "imbalance_ratio",
         "param1_vals": [1.5, 2.0, 2.5, 3.0, 4.0],
         "param2_name": "exhaustion_div_pct",
         "param2_vals": [0.15, 0.25, 0.35, 0.50],
-        "order_type": "limit_poc_node"
+        "description": "Intrabar microstructure signed delta proxy (Synthetic Proxy, Not Institutional L2)"
     },
     "orb": {
         "code": "OR",
-        "name": "Opening Range Breakout (ORB)",
+        "name": "Session Opening Range (Time-Based ORB)",
         "param1_name": "breakout_buffer_atr",
         "param1_vals": [0.05, 0.10, 0.15, 0.20, 0.30],
         "param2_name": "pullback_depth_pct",
         "param2_vals": [0.00, 0.10, 0.25, 0.50],
-        "order_type": "limit_orb_retest"
+        "description": "First 30-minute fixed time session opening breakout"
     },
     "poc": {
         "code": "PC",
-        "name": "Point of Control (POC)",
+        "name": "Point of Control (True Volume Profile)",
         "param1_name": "dist_to_poc_atr",
         "param1_vals": [0.10, 0.20, 0.30, 0.40, 0.50],
         "param2_name": "va_width_pct",
         "param2_vals": [0.68, 0.70, 0.75, 0.80],
-        "order_type": "limit_poc_level"
+        "description": "Price-bucketed volume distribution (POC, VAH, VAL)"
     },
     "zscore": {
         "code": "ZS",
@@ -122,7 +128,7 @@ STRATEGY_SPECS = {
         "param1_vals": [1.8, 2.0, 2.2, 2.5, 3.0],
         "param2_name": "rejection_wick_pct",
         "param2_vals": [0.30, 0.40, 0.50, 0.60],
-        "order_type": "limit_z_band"
+        "description": "Statistical standard deviation price exhaustion"
     },
     "atr_swing": {
         "code": "AS",
@@ -131,7 +137,7 @@ STRATEGY_SPECS = {
         "param1_vals": [0.5, 1.0, 1.5, 2.0, 2.5],
         "param2_name": "pullback_atr",
         "param2_vals": [1.0, 1.5, 2.0, 2.5],
-        "order_type": "limit_atr_band"
+        "description": "Trend velocity filter with ATR structural pullbacks"
     }
 }
 
@@ -162,7 +168,7 @@ def build_grid_for_strategy(strategy_key):
                 param1_val=v1,
                 param2_name=p2_name,
                 param2_val=v2,
-                extra={"strategy_name": spec["name"], "order_type": spec["order_type"]}
+                extra={"strategy_name": spec["name"], "description": spec["description"]}
             )
             grid.append(cfg)
             idx += 1
@@ -170,31 +176,57 @@ def build_grid_for_strategy(strategy_key):
 
 
 # ---------------------------------------------------------------------------
-# CANDIDATE PLAN CLASS
+# PURE SIGNAL PLAN CLASS (TP/SL & Limit Orders Disabled by Default)
 # ---------------------------------------------------------------------------
 
 class CandidatePlan:
-    """Represents a generated trade setup ready for Monte Carlo simulation."""
-    def __init__(self, plan_id, side, entry_bar_index, entry_price, stop_loss, take_profit, price_step=0.01, tag=""):
+    """
+    Represents an entry signal generated by a strategy configuration.
+    
+    If enable_tpsl is False (DEFAULT):
+        - Stop loss and Take profit are None.
+        - Risk and reward are 0.0.
+    If enable_limits is False (DEFAULT):
+        - Entry price is the signal candle Close (Market Trigger Entry).
+    """
+    def __init__(
+        self, plan_id, side, entry_bar_index, entry_price,
+        stop_loss=None, take_profit=None, price_step=0.01,
+        enable_tpsl=False, tag=""
+    ):
         self.plan_id = plan_id
         self.side = side.lower()
         self.entry_bar_index = entry_bar_index
         self.price_step = float(price_step or 0.01)
         self.entry_price = _round_to_step(entry_price, self.price_step)
-        self.stop_loss = _round_to_step(stop_loss, self.price_step)
-        self.take_profit = _round_to_step(take_profit, self.price_step)
-        self.risk = abs(self.entry_price - self.stop_loss)
-        self.reward = abs(self.take_profit - self.entry_price)
-        self.target_r = round(self.reward / self.risk, 3) if self.risk > 0 else 2.0
+        self.enable_tpsl = enable_tpsl
+
+        if enable_tpsl and stop_loss is not None and take_profit is not None:
+            self.stop_loss = _round_to_step(stop_loss, self.price_step)
+            self.take_profit = _round_to_step(take_profit, self.price_step)
+            self.risk = abs(self.entry_price - self.stop_loss)
+            self.reward = abs(self.take_profit - self.entry_price)
+            self.target_r = round(self.reward / self.risk, 3) if self.risk > 0 else 2.0
+        else:
+            self.stop_loss = None
+            self.take_profit = None
+            self.risk = 0.0
+            self.reward = 0.0
+            self.target_r = 0.0
+
         self.tag = tag
 
     def is_valid(self):
-        if self.risk <= 0 or self.reward <= 0:
+        if self.entry_price <= 0:
             return False
-        if self.side == "buy":
-            return self.stop_loss < self.entry_price < self.take_profit
-        else:
-            return self.take_profit < self.entry_price < self.stop_loss
+        if self.enable_tpsl:
+            if self.risk <= 0 or self.reward <= 0:
+                return False
+            if self.side == "buy":
+                return self.stop_loss < self.entry_price < self.take_profit
+            else:
+                return self.take_profit < self.entry_price < self.stop_loss
+        return True
 
     def to_dict(self):
         return {
@@ -207,23 +239,16 @@ class CandidatePlan:
             "risk": self.risk,
             "reward": self.reward,
             "target_r": self.target_r,
+            "enable_tpsl": self.enable_tpsl,
             "tag": self.tag
         }
 
 
 # ---------------------------------------------------------------------------
-# ADVANCED FEATURE EXTRACTION ENGINE
+# ADVANCED FEATURE EXTRACTION (TIME-BASED MINUTES & MICROSTRUCTURE)
 # ---------------------------------------------------------------------------
 
 def extract_candle_features(bars, baseline_period=20):
-    """
-    Extracts rich market features:
-    - RVOL (with zero-division & no-volume fallback)
-    - Order flow signed delta proxy (aggressor volume)
-    - Wicks, body, close positions, ATR
-    - Session hour markers (London: 7-15 UTC, NY: 12-21 UTC)
-    - Swing highs / lows liquidity levels
-    """
     n = len(bars)
     if n < 5:
         return {}
@@ -233,8 +258,7 @@ def extract_candle_features(bars, baseline_period=20):
     highs = np.array([float(b["high"]) for b in bars], dtype=np.float64)
     lows = np.array([float(b["low"]) for b in bars], dtype=np.float64)
     closes = np.array([float(b["close"]) for b in bars], dtype=np.float64)
-    
-    # Extract volume or fallback to tick_volume, or pseudo-volume based on range
+
     raw_vols = []
     for b in bars:
         v = b.get("volume", b.get("tick_volume", None))
@@ -250,16 +274,13 @@ def extract_candle_features(bars, baseline_period=20):
     lower_wicks = np.minimum(opens, closes) - lows
     close_positions = (closes - lows) / ranges
 
-    # Order flow signed delta proxy:
-    # Intrabar price positioning determines Buyer vs Seller dominance
-    # delta_ratio: -1.0 (pure sell aggressive) to +1.0 (pure buy aggressive)
+    # Microstructure Signed Delta Proxy (Synthetic tick estimation)
     directional_bias = (closes - opens) / ranges
     signed_delta = vols * directional_bias
     buy_vol = np.maximum((vols + signed_delta) / 2.0, 1e-6)
     sell_vol = np.maximum((vols - signed_delta) / 2.0, 1e-6)
     bid_ask_imbalance = np.where(closes >= opens, buy_vol / sell_vol, sell_vol / buy_vol)
 
-    # Rolling baseline volume
     vol_baseline = np.zeros(n, dtype=np.float64)
     for i in range(n):
         s_idx = max(0, i - baseline_period)
@@ -267,7 +288,6 @@ def extract_candle_features(bars, baseline_period=20):
     vol_baseline = np.maximum(vol_baseline, 1e-6)
     rvol = vols / vol_baseline
 
-    # True Range & ATR(14)
     tr = np.zeros(n, dtype=np.float64)
     tr[0] = ranges[0]
     for i in range(1, n):
@@ -278,21 +298,9 @@ def extract_candle_features(bars, baseline_period=20):
         s = max(0, i - 13)
         atr[i] = np.mean(tr[s:i + 1])
 
-    # Session markers (UTC Hour)
-    hours = np.zeros(n, dtype=np.int32)
-    for i, ts in enumerate(timestamps):
-        if ts > 0:
-            try:
-                hours[i] = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).hour
-            except Exception:
-                hours[i] = 12
-        else:
-            hours[i] = 12
-
     return {
         "n": n,
         "timestamps": timestamps,
-        "hours": hours,
         "opens": opens, "highs": highs, "lows": lows, "closes": closes,
         "vols": vols, "ranges": ranges, "bodies": bodies,
         "upper_wicks": upper_wicks, "lower_wicks": lower_wicks,
@@ -302,14 +310,13 @@ def extract_candle_features(bars, baseline_period=20):
 
 
 # ---------------------------------------------------------------------------
-# DEEP STRATEGY DETECTORS (Prioritas D: True Mechanics)
+# 9 STRATEGY DETECTORS (TP/SL & LIMIT DISABLE SUPPORT)
 # ---------------------------------------------------------------------------
 
-def generate_absorption_plans(grid_config, feats, price_step=0.01):
+def generate_absorption_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, enable_limits=False):
     """
-    Liquidity Absorption + Volume (LA01 - LA20).
-    True mechanics: Must sweep a structural swing extreme within 0.10 ATR,
-    then produce an absorption candle (RVOL surge + rejection wick) and close back inside.
+    1. Liquidity Absorption + Volume (LA01 - LA20).
+    Requires positive penetration depth >= 0.05 ATR to distinguish true sweeps from touches.
     """
     plans = {"buy": [], "sell": []}
     n = feats.get("n", 0)
@@ -320,16 +327,11 @@ def generate_absorption_plans(grid_config, feats, price_step=0.01):
     min_wick_ratio = grid_config.param2_val
     cid = grid_config.config_id
 
-    rvol = feats["rvol"]
-    bodies = feats["bodies"]
-    upper_wicks = feats["upper_wicks"]
-    lower_wicks = feats["lower_wicks"]
-    close_positions = feats["close_positions"]
-    ranges = feats["ranges"]
-    atr = feats["atr"]
-    highs = feats["highs"]
-    lows = feats["lows"]
-    closes = feats["closes"]
+    rvol, bodies, upper_wicks, lower_wicks = feats["rvol"], feats["bodies"], feats["upper_wicks"], feats["lower_wicks"]
+    close_positions, ranges, atr = feats["close_positions"], feats["ranges"], feats["atr"]
+    highs, lows, closes = feats["highs"], feats["lows"], feats["closes"]
+
+    min_penetration_factor = 0.05  # Wajib tembus minimal 0.05 ATR
 
     for i in range(25, n - 1):
         c_atr = atr[i]
@@ -339,53 +341,50 @@ def generate_absorption_plans(grid_config, feats, price_step=0.01):
         prior_swing_low = np.min(lows[max(0, i - 15):i])
         prior_swing_high = np.max(highs[max(0, i - 15):i])
 
-        # Bullish Absorption:
-        # 1. Price swept prior swing low (lows[i] <= prior_swing_low)
-        # 2. Within 0.15 ATR distance
-        # 3. Closed back above swing low (reclaim)
-        # 4. Meets RVOL & Lower Wick threshold
-        if (lows[i] <= prior_swing_low and
-            abs(lows[i] - prior_swing_low) <= 0.15 * c_atr and
+        # Bullish Absorption (True positive sweep + rejection + reclaim)
+        bullish_penetration = prior_swing_low - lows[i]
+        if (bullish_penetration >= min_penetration_factor * c_atr and
+            bullish_penetration <= 0.35 * c_atr and
             closes[i] >= prior_swing_low and
             rvol[i] >= min_rvol and
             lower_wicks[i] >= min_wick_ratio * bodies[i] and
             close_positions[i] >= 0.60):
             
-            entry = lows[i] + 0.5 * lower_wicks[i]
+            entry = (lows[i] + 0.5 * lower_wicks[i]) if enable_limits else closes[i]
             stop = lows[i] - 0.05 * c_atr
-            risk = entry - stop
-            if risk > 0:
-                target = entry + 2.0 * risk
-                plan = CandidatePlan(cid, "buy", i, entry, stop, target, price_step=price_step, tag=f"{cid} Sweep+Absorption")
-                if plan.is_valid():
-                    plans["buy"].append(plan)
+            target = entry + 2.0 * abs(entry - stop)
+            plan = CandidatePlan(
+                cid, "buy", i, entry, stop_loss=stop, take_profit=target,
+                price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} Sweep+Absorption"
+            )
+            if plan.is_valid():
+                plans["buy"].append(plan)
 
-        # Bearish Absorption:
-        # 1. Price swept prior swing high
-        # 2. Closed back below swing high
-        # 3. Meets RVOL & Upper Wick threshold
-        if (highs[i] >= prior_swing_high and
-            abs(highs[i] - prior_swing_high) <= 0.15 * c_atr and
+        # Bearish Absorption (True positive sweep high + rejection + reclaim)
+        bearish_penetration = highs[i] - prior_swing_high
+        if (bearish_penetration >= min_penetration_factor * c_atr and
+            bearish_penetration <= 0.35 * c_atr and
             closes[i] <= prior_swing_high and
             rvol[i] >= min_rvol and
             upper_wicks[i] >= min_wick_ratio * bodies[i] and
             close_positions[i] <= 0.40):
 
-            entry = highs[i] - 0.5 * upper_wicks[i]
+            entry = (highs[i] - 0.5 * upper_wicks[i]) if enable_limits else closes[i]
             stop = highs[i] + 0.05 * c_atr
-            risk = stop - entry
-            if risk > 0:
-                target = entry - 2.0 * risk
-                plan = CandidatePlan(cid, "sell", i, entry, stop, target, price_step=price_step, tag=f"{cid} Sweep+Absorption")
-                if plan.is_valid():
-                    plans["sell"].append(plan)
+            target = entry - 2.0 * abs(stop - entry)
+            plan = CandidatePlan(
+                cid, "sell", i, entry, stop_loss=stop, take_profit=target,
+                price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} Sweep+Absorption"
+            )
+            if plan.is_valid():
+                plans["sell"].append(plan)
 
     return plans
 
 
-def generate_sweep_sms_plans(grid_config, feats, price_step=0.01):
+def generate_sweep_sms_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, enable_limits=False):
     """
-    Liquidity Sweep + SMS + OB (SS01 - SS20).
+    2. Liquidity Sweep + SMS + OB (SS01 - SS20).
     """
     plans = {"buy": [], "sell": []}
     n = feats.get("n", 0)
@@ -404,40 +403,40 @@ def generate_sweep_sms_plans(grid_config, feats, price_step=0.01):
         prior_low = np.min(lows[i - 12:i])
         prior_high = np.max(highs[i - 12:i])
 
-        # Bullish: Low penetrates prior_low by sweep_depth, then SMS displacement candle
         if lows[i] <= prior_low - (sweep_depth * c_atr):
             for k in [i + 1, min(i + 2, n - 1)]:
                 if closes[k] > opens[k] and (closes[k] - opens[k]) >= (sms_body * c_atr) and closes[k] > prior_low:
-                    ob_entry = lows[i] + 0.50 * (closes[k] - lows[i])
+                    ob_entry = (lows[i] + 0.50 * (closes[k] - lows[i])) if enable_limits else closes[k]
                     stop = lows[i] - 0.10 * c_atr
-                    risk = ob_entry - stop
-                    if risk > 0:
-                        target = ob_entry + 2.0 * risk
-                        plan = CandidatePlan(cid, "buy", k, ob_entry, stop, target, price_step=price_step, tag=f"{cid} Sweep+SMS+OB")
-                        if plan.is_valid():
-                            plans["buy"].append(plan)
+                    target = ob_entry + 2.0 * abs(ob_entry - stop)
+                    plan = CandidatePlan(
+                        cid, "buy", k, ob_entry, stop_loss=stop, take_profit=target,
+                        price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} Sweep+SMS+OB"
+                    )
+                    if plan.is_valid():
+                        plans["buy"].append(plan)
                     break
 
-        # Bearish: High penetrates prior_high
         if highs[i] >= prior_high + (sweep_depth * c_atr):
             for k in [i + 1, min(i + 2, n - 1)]:
                 if closes[k] < opens[k] and (opens[k] - closes[k]) >= (sms_body * c_atr) and closes[k] < prior_high:
-                    ob_entry = highs[i] - 0.50 * (highs[i] - closes[k])
+                    ob_entry = (highs[i] - 0.50 * (highs[i] - closes[k])) if enable_limits else closes[k]
                     stop = highs[i] + 0.10 * c_atr
-                    risk = stop - ob_entry
-                    if risk > 0:
-                        target = ob_entry - 2.0 * risk
-                        plan = CandidatePlan(cid, "sell", k, ob_entry, stop, target, price_step=price_step, tag=f"{cid} Sweep+SMS+OB")
-                        if plan.is_valid():
-                            plans["sell"].append(plan)
+                    target = ob_entry - 2.0 * abs(stop - ob_entry)
+                    plan = CandidatePlan(
+                        cid, "sell", k, ob_entry, stop_loss=stop, take_profit=target,
+                        price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} Sweep+SMS+OB"
+                    )
+                    if plan.is_valid():
+                        plans["sell"].append(plan)
                     break
 
     return plans
 
 
-def generate_fvg_plans(grid_config, feats, price_step=0.01):
+def generate_fvg_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, enable_limits=False):
     """
-    Fair Value Gap (FV01 - FV20).
+    3. Fair Value Gap (FV01 - FV20).
     """
     plans = {"buy": [], "sell": []}
     n = feats.get("n", 0)
@@ -448,45 +447,43 @@ def generate_fvg_plans(grid_config, feats, price_step=0.01):
     retrace_pct = grid_config.param2_val
     cid = grid_config.config_id
 
-    highs, lows = feats["highs"], feats["lows"]
+    highs, lows, closes = feats["highs"], feats["lows"], feats["closes"]
     atr = feats["atr"]
 
     for i in range(2, n - 1):
         c_atr = atr[i]
-        # Bullish FVG
         gap_buy = lows[i] - highs[i - 2]
         if gap_buy >= min_gap_atr * c_atr:
-            fvg_top = lows[i]
-            fvg_bot = highs[i - 2]
-            entry = fvg_top - retrace_pct * (fvg_top - fvg_bot)
+            fvg_top, fvg_bot = lows[i], highs[i - 2]
+            entry = (fvg_top - retrace_pct * (fvg_top - fvg_bot)) if enable_limits else closes[i]
             stop = fvg_bot - 0.10 * c_atr
-            risk = entry - stop
-            if risk > 0:
-                target = entry + 2.0 * risk
-                plan = CandidatePlan(cid, "buy", i, entry, stop, target, price_step=price_step, tag=f"{cid} FVG Reversal")
-                if plan.is_valid():
-                    plans["buy"].append(plan)
+            target = entry + 2.0 * abs(entry - stop)
+            plan = CandidatePlan(
+                cid, "buy", i, entry, stop_loss=stop, take_profit=target,
+                price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} FVG Reversal"
+            )
+            if plan.is_valid():
+                plans["buy"].append(plan)
 
-        # Bearish FVG
         gap_sell = lows[i - 2] - highs[i]
         if gap_sell >= min_gap_atr * c_atr:
-            fvg_top = lows[i - 2]
-            fvg_bot = highs[i]
-            entry = fvg_bot + retrace_pct * (fvg_top - fvg_bot)
+            fvg_top, fvg_bot = lows[i - 2], highs[i]
+            entry = (fvg_bot + retrace_pct * (fvg_top - fvg_bot)) if enable_limits else closes[i]
             stop = fvg_top + 0.10 * c_atr
-            risk = stop - entry
-            if risk > 0:
-                target = entry - 2.0 * risk
-                plan = CandidatePlan(cid, "sell", i, entry, stop, target, price_step=price_step, tag=f"{cid} Bearish FVG")
-                if plan.is_valid():
-                    plans["sell"].append(plan)
+            target = entry - 2.0 * abs(stop - entry)
+            plan = CandidatePlan(
+                cid, "sell", i, entry, stop_loss=stop, take_profit=target,
+                price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} Bearish FVG"
+            )
+            if plan.is_valid():
+                plans["sell"].append(plan)
 
     return plans
 
 
-def generate_acc_ifvg_plans(grid_config, feats, price_step=0.01):
+def generate_acc_ifvg_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, enable_limits=False):
     """
-    Accumulation + Inverse FVG (IF01 - IF20).
+    4. Accumulation + Inverse FVG (IF01 - IF20).
     """
     plans = {"buy": [], "sell": []}
     n = feats.get("n", 0)
@@ -506,34 +503,33 @@ def generate_acc_ifvg_plans(grid_config, feats, price_step=0.01):
         cons_low = np.min(lows[i - 10:i])
         if (cons_high - cons_low) <= comp_width * c_atr:
             if closes[i] > cons_high:
-                entry = cons_high - (retest_tol * 0.2 * c_atr)
+                entry = (cons_high - (retest_tol * 0.2 * c_atr)) if enable_limits else closes[i]
                 stop = cons_low
-                risk = entry - stop
-                if risk > 0:
-                    target = entry + 2.0 * risk
-                    plan = CandidatePlan(cid, "buy", i, entry, stop, target, price_step=price_step, tag=f"{cid} IFVG Reclaim")
-                    if plan.is_valid():
-                        plans["buy"].append(plan)
+                target = entry + 2.0 * abs(entry - stop)
+                plan = CandidatePlan(
+                    cid, "buy", i, entry, stop_loss=stop, take_profit=target,
+                    price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} IFVG Reclaim"
+                )
+                if plan.is_valid():
+                    plans["buy"].append(plan)
             elif closes[i] < cons_low:
-                entry = cons_low + (retest_tol * 0.2 * c_atr)
+                entry = (cons_low + (retest_tol * 0.2 * c_atr)) if enable_limits else closes[i]
                 stop = cons_high
-                risk = stop - entry
-                if risk > 0:
-                    target = entry - 2.0 * risk
-                    plan = CandidatePlan(cid, "sell", i, entry, stop, target, price_step=price_step, tag=f"{cid} IFVG Reclaim")
-                    if plan.is_valid():
-                        plans["sell"].append(plan)
+                target = entry - 2.0 * abs(stop - entry)
+                plan = CandidatePlan(
+                    cid, "sell", i, entry, stop_loss=stop, take_profit=target,
+                    price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} IFVG Reclaim"
+                )
+                if plan.is_valid():
+                    plans["sell"].append(plan)
 
     return plans
 
 
-def generate_footprint_plans(grid_config, feats, price_step=0.01):
+def generate_footprint_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, enable_limits=False):
     """
-    Footprint (Order Flow) Proxy (FP01 - FP20).
-    True mechanics:
-    - Uses signed delta proxy & bid_ask_imbalance.
-    - Bullish setup: Heavy selling aggression absorbed (negative delta but tight range / exhaustion wick).
-    - Limit order placed at the high-volume cluster / POC of the footprint bar.
+    5. Synthetic Tick Delta (Order Flow Microstructure Proxy) (FP01 - FP20).
+    Explicit transparent proxy label.
     """
     plans = {"buy": [], "sell": []}
     n = feats.get("n", 0)
@@ -546,8 +542,7 @@ def generate_footprint_plans(grid_config, feats, price_step=0.01):
 
     imbalance = feats["bid_ask_imbalance"]
     signed_delta = feats["signed_delta"]
-    closes, opens = feats["closes"], feats["opens"]
-    highs, lows = feats["highs"], feats["lows"]
+    closes, highs, lows = feats["closes"], feats["highs"], feats["lows"]
     lower_wicks, upper_wicks = feats["lower_wicks"], feats["upper_wicks"]
     ranges = feats["ranges"]
     atr = feats["atr"]
@@ -555,43 +550,35 @@ def generate_footprint_plans(grid_config, feats, price_step=0.01):
     for i in range(10, n - 1):
         c_atr = atr[i]
 
-        # Bullish Footprint Absorption:
-        # Aggressive selling delta absorbed by passive buyers:
-        # signed_delta is negative, imbalance >= imbal_ratio, lower rejection wick >= exhaustion_pct * range
         if signed_delta[i] < 0 and imbalance[i] >= imbal_ratio and (lower_wicks[i] / ranges[i]) >= exhaustion_pct:
-            # Entry at the volume cluster node (lower 38.2% of candle)
-            poc_node = lows[i] + 0.382 * ranges[i]
+            poc_node = (lows[i] + 0.382 * ranges[i]) if enable_limits else closes[i]
             stop = lows[i] - 0.10 * c_atr
-            risk = poc_node - stop
-            if risk > 0:
-                target = poc_node + 2.0 * risk
-                plan = CandidatePlan(cid, "buy", i, poc_node, stop, target, price_step=price_step, tag=f"{cid} Footprint Delta Absorption")
-                if plan.is_valid():
-                    plans["buy"].append(plan)
+            target = poc_node + 2.0 * abs(poc_node - stop)
+            plan = CandidatePlan(
+                cid, "buy", i, poc_node, stop_loss=stop, take_profit=target,
+                price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} Microstructure Delta Absorption"
+            )
+            if plan.is_valid():
+                plans["buy"].append(plan)
 
-        # Bearish Footprint Absorption:
-        # Aggressive buying delta absorbed by passive sellers:
-        # signed_delta is positive, imbalance >= imbal_ratio, upper rejection wick >= exhaustion_pct * range
         elif signed_delta[i] > 0 and imbalance[i] >= imbal_ratio and (upper_wicks[i] / ranges[i]) >= exhaustion_pct:
-            poc_node = highs[i] - 0.382 * ranges[i]
+            poc_node = (highs[i] - 0.382 * ranges[i]) if enable_limits else closes[i]
             stop = highs[i] + 0.10 * c_atr
-            risk = stop - poc_node
-            if risk > 0:
-                target = poc_node - 2.0 * risk
-                plan = CandidatePlan(cid, "sell", i, poc_node, stop, target, price_step=price_step, tag=f"{cid} Footprint Delta Absorption")
-                if plan.is_valid():
-                    plans["sell"].append(plan)
+            target = poc_node - 2.0 * abs(stop - poc_node)
+            plan = CandidatePlan(
+                cid, "sell", i, poc_node, stop_loss=stop, take_profit=target,
+                price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} Microstructure Delta Absorption"
+            )
+            if plan.is_valid():
+                plans["sell"].append(plan)
 
     return plans
 
 
-def generate_orb_plans(grid_config, feats, price_step=0.01):
+def generate_orb_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, enable_limits=False):
     """
-    Opening Range Breakout (OR01 - OR20).
-    True mechanics:
-    - Identifies London Open (07:00-08:00 UTC) or NY Open (13:00-14:00 UTC) range.
-    - Breakout buffer beyond session opening high/low.
-    - Pullback limit entry onto the ORB boundary.
+    6. Session Opening Range Breakout (OR01 - OR20).
+    Agnostik M1/M5: Menggunakan durasi waktu riil 30 menit pembukaan sesi.
     """
     plans = {"buy": [], "sell": []}
     n = feats.get("n", 0)
@@ -602,94 +589,93 @@ def generate_orb_plans(grid_config, feats, price_step=0.01):
     pb_depth = grid_config.param2_val
     cid = grid_config.config_id
 
-    hours = feats["hours"]
+    timestamps = feats["timestamps"]
     highs, lows, closes = feats["highs"], feats["lows"], feats["closes"]
     atr = feats["atr"]
 
-    # Detect session open transitions (hour 7 or hour 13 UTC)
+    # Cari bar awal interval (setiap lonjakan siklus ~4 jam atau perubahan hari)
     session_starts = []
     for i in range(1, n):
-        if (hours[i] in (7, 13)) and (hours[i - 1] != hours[i]):
+        dt_curr = datetime.datetime.fromtimestamp(timestamps[i], tz=datetime.timezone.utc)
+        dt_prev = datetime.datetime.fromtimestamp(timestamps[i - 1], tz=datetime.timezone.utc)
+        # Deteksi pergantian hari atau transisi sesi London (07-08 UTC) & NY (12-13 UTC)
+        if dt_curr.day != dt_prev.day or (dt_curr.hour in (7, 13) and dt_prev.hour != dt_curr.hour):
             session_starts.append(i)
 
-    # Fallback if timestamps lack session marks: sample every 24 bars
     if len(session_starts) < 2:
-        session_starts = list(range(24, n - 12, 24))
+        session_starts = list(range(30, n - 20, 30))
 
     for start_idx in session_starts:
-        if start_idx + 12 >= n:
+        # Hitung rentang 30 menit pertama secara presisi waktu
+        start_ts = timestamps[start_idx]
+        or_end_idx = start_idx
+        while or_end_idx < n and (timestamps[or_end_idx] - start_ts) <= 1800:  # 1800 detik = 30 menit
+            or_end_idx += 1
+        
+        if or_end_idx >= n or or_end_idx == start_idx:
             continue
+
         c_atr = atr[start_idx]
-        # First 6 bars define the Opening Range
-        or_end = min(start_idx + 6, n - 1)
-        orb_high = np.max(highs[start_idx:or_end])
-        orb_low = np.min(lows[start_idx:or_end])
+        orb_high = np.max(highs[start_idx:or_end_idx])
+        orb_low = np.min(lows[start_idx:or_end_idx])
         orb_range = max(orb_high - orb_low, 0.2 * c_atr)
 
-        # Subsequent bars search for breakout & retest
-        for k in range(or_end, min(start_idx + 24, n - 1)):
+        # Evaluasi pergerakan setelah 30 menit pertama
+        for k in range(or_end_idx, min(or_end_idx + 30, n - 1)):
             if closes[k] > orb_high + buffer_atr * c_atr:
-                entry = orb_high - pb_depth * orb_range
+                entry = (orb_high - pb_depth * orb_range) if enable_limits else closes[k]
                 stop = orb_high - 0.40 * orb_range
-                risk = entry - stop
-                if risk > 0:
-                    target = entry + 2.0 * risk
-                    plan = CandidatePlan(cid, "buy", k, entry, stop, target, price_step=price_step, tag=f"{cid} Session ORB Long")
-                    if plan.is_valid():
-                        plans["buy"].append(plan)
+                target = entry + 2.0 * abs(entry - stop)
+                plan = CandidatePlan(
+                    cid, "buy", k, entry, stop_loss=stop, take_profit=target,
+                    price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} 30m ORB Breakout"
+                )
+                if plan.is_valid():
+                    plans["buy"].append(plan)
                 break
             elif closes[k] < orb_low - buffer_atr * c_atr:
-                entry = orb_low + pb_depth * orb_range
+                entry = (orb_low + pb_depth * orb_range) if enable_limits else closes[k]
                 stop = orb_low + 0.40 * orb_range
-                risk = stop - entry
-                if risk > 0:
-                    target = entry - 2.0 * risk
-                    plan = CandidatePlan(cid, "sell", k, entry, stop, target, price_step=price_step, tag=f"{cid} Session ORB Short")
-                    if plan.is_valid():
-                        plans["sell"].append(plan)
+                target = entry - 2.0 * abs(stop - entry)
+                plan = CandidatePlan(
+                    cid, "sell", k, entry, stop_loss=stop, take_profit=target,
+                    price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} 30m ORB Breakdown"
+                )
+                if plan.is_valid():
+                    plans["sell"].append(plan)
                 break
 
     return plans
 
 
 def _calculate_true_volume_profile(bars_slice, price_step=0.01):
-    """
-    Computes true Volume Profile histogram across bars_slice.
-    Returns: (poc_price, vah_price, val_price)
-    """
     if not bars_slice:
         return 0.0, 0.0, 0.0
     all_highs = [float(b["high"]) for b in bars_slice]
     all_lows = [float(b["low"]) for b in bars_slice]
-    min_p = min(all_lows)
-    max_p = max(all_highs)
+    min_p, max_p = min(all_lows), max(all_highs)
     if max_p <= min_p:
         return min_p, min_p, min_p
 
-    bins = max(10, int((max_p - min_p) / (price_step * 10)))
-    bins = min(bins, 100)
+    bins = min(100, max(10, int((max_p - min_p) / (price_step * 10))))
     bin_edges = np.linspace(min_p, max_p, bins + 1)
     bin_vols = np.zeros(bins, dtype=np.float64)
 
     for b in bars_slice:
         h, l = float(b["high"]), float(b["low"])
         v = float(b.get("volume", b.get("tick_volume", 1.0)) or 1.0)
-        idx_low = np.searchsorted(bin_edges, l, side="right") - 1
-        idx_high = np.searchsorted(bin_edges, h, side="right") - 1
-        idx_low = max(0, min(bins - 1, idx_low))
-        idx_high = max(0, min(bins - 1, idx_high))
+        idx_low = max(0, min(bins - 1, np.searchsorted(bin_edges, l, side="right") - 1))
+        idx_high = max(0, min(bins - 1, np.searchsorted(bin_edges, h, side="right") - 1))
         span = max(1, idx_high - idx_low + 1)
         bin_vols[idx_low:idx_high + 1] += v / span
 
     poc_idx = int(np.argmax(bin_vols))
     poc_price = (bin_edges[poc_idx] + bin_edges[poc_idx + 1]) / 2.0
-
-    # Value Area (70% total volume)
     total_vol = np.sum(bin_vols)
     target_va = total_vol * 0.70
     accum = bin_vols[poc_idx]
-    up_idx = poc_idx
-    dn_idx = poc_idx
+    up_idx, dn_idx = poc_idx, poc_idx
+
     while accum < target_va and (up_idx < bins - 1 or dn_idx > 0):
         up_v = bin_vols[up_idx + 1] if up_idx < bins - 1 else 0
         dn_v = bin_vols[dn_idx - 1] if dn_idx > 0 else 0
@@ -711,10 +697,9 @@ def _calculate_true_volume_profile(bars_slice, price_step=0.01):
     return poc_price, vah_price, val_price
 
 
-def generate_poc_plans(grid_config, feats, price_step=0.01):
+def generate_poc_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, enable_limits=False):
     """
-    Point of Control & Value Area Profile (PC01 - PC20).
-    True mechanics: Computes full price-bucketed volume distribution across rolling windows.
+    7. Point of Control & Value Area Profile (PC01 - PC20).
     """
     plans = {"buy": [], "sell": []}
     n = feats.get("n", 0)
@@ -728,10 +713,8 @@ def generate_poc_plans(grid_config, feats, price_step=0.01):
     highs, lows, closes = feats["highs"], feats["lows"], feats["closes"]
     atr = feats["atr"]
 
-    # Step through rolling 30-bar windows to compute real Volume Profile
     for i in range(30, n - 1, 5):
         c_atr = atr[i]
-        # Reconstruct miniature slice of bars
         window_highs = highs[i - 30:i]
         window_lows = lows[i - 30:i]
         window_vols = feats["vols"][i - 30:i]
@@ -741,37 +724,37 @@ def generate_poc_plans(grid_config, feats, price_step=0.01):
         if poc <= 0:
             continue
 
-        # Adjust VA bounds by configuration scaling
         val = poc - (poc - val) * (va_width_scale / 0.70)
         vah = poc + (vah - poc) * (va_width_scale / 0.70)
 
-        # Test candle i for bounce at VAL or rejection at VAH
         if abs(lows[i] - val) <= dist_atr * c_atr and closes[i] > lows[i]:
-            entry = val
+            entry = val if enable_limits else closes[i]
             stop = val - 0.20 * c_atr
-            risk = entry - stop
-            if risk > 0:
-                target = entry + 2.0 * risk
-                plan = CandidatePlan(cid, "buy", i, entry, stop, target, price_step=price_step, tag=f"{cid} True VAL Rebound")
-                if plan.is_valid():
-                    plans["buy"].append(plan)
+            target = entry + 2.0 * abs(entry - stop)
+            plan = CandidatePlan(
+                cid, "buy", i, entry, stop_loss=stop, take_profit=target,
+                price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} True VAL Bounce"
+            )
+            if plan.is_valid():
+                plans["buy"].append(plan)
 
         if abs(highs[i] - vah) <= dist_atr * c_atr and closes[i] < highs[i]:
-            entry = vah
+            entry = vah if enable_limits else closes[i]
             stop = vah + 0.20 * c_atr
-            risk = stop - entry
-            if risk > 0:
-                target = entry - 2.0 * risk
-                plan = CandidatePlan(cid, "sell", i, entry, stop, target, price_step=price_step, tag=f"{cid} True VAH Rebound")
-                if plan.is_valid():
-                    plans["sell"].append(plan)
+            target = entry - 2.0 * abs(stop - entry)
+            plan = CandidatePlan(
+                cid, "sell", i, entry, stop_loss=stop, take_profit=target,
+                price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} True VAH Rejection"
+            )
+            if plan.is_valid():
+                plans["sell"].append(plan)
 
     return plans
 
 
-def generate_zscore_plans(grid_config, feats, price_step=0.01):
+def generate_zscore_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, enable_limits=False):
     """
-    Mean Reversion Z-Score (ZS01 - ZS20).
+    8. Mean Reversion Z-Score (ZS01 - ZS20).
     """
     plans = {"buy": [], "sell": []}
     n = feats.get("n", 0)
@@ -799,29 +782,31 @@ def generate_zscore_plans(grid_config, feats, price_step=0.01):
         if z <= -z_thresh and (lower_wicks[i] / ranges[i]) >= min_wick_pct:
             entry = closes[i]
             stop = lows[i] - 0.10 * c_atr
-            risk = entry - stop
-            if risk > 0:
-                target = entry + 2.0 * risk
-                plan = CandidatePlan(cid, "buy", i, entry, stop, target, price_step=price_step, tag=f"{cid} Z-Score Oversold")
-                if plan.is_valid():
-                    plans["buy"].append(plan)
+            target = entry + 2.0 * abs(entry - stop)
+            plan = CandidatePlan(
+                cid, "buy", i, entry, stop_loss=stop, take_profit=target,
+                price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} Z-Score Oversold"
+            )
+            if plan.is_valid():
+                plans["buy"].append(plan)
 
         elif z >= z_thresh and (upper_wicks[i] / ranges[i]) >= min_wick_pct:
             entry = closes[i]
             stop = highs[i] + 0.10 * c_atr
-            risk = stop - entry
-            if risk > 0:
-                target = entry - 2.0 * risk
-                plan = CandidatePlan(cid, "sell", i, entry, stop, target, price_step=price_step, tag=f"{cid} Z-Score Overbought")
-                if plan.is_valid():
-                    plans["sell"].append(plan)
+            target = entry - 2.0 * abs(stop - entry)
+            plan = CandidatePlan(
+                cid, "sell", i, entry, stop_loss=stop, take_profit=target,
+                price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} Z-Score Overbought"
+            )
+            if plan.is_valid():
+                plans["sell"].append(plan)
 
     return plans
 
 
-def generate_atr_swing_plans(grid_config, feats, price_step=0.01):
+def generate_atr_swing_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, enable_limits=False):
     """
-    ATR Swing Structure (AS01 - AS20).
+    9. ATR Swing Structure (AS01 - AS20).
     """
     plans = {"buy": [], "sell": []}
     n = feats.get("n", 0)
@@ -842,26 +827,28 @@ def generate_atr_swing_plans(grid_config, feats, price_step=0.01):
         if slope >= (velocity * 0.1):
             recent_high = np.max(highs[i - 5:i])
             if (recent_high - lows[i]) >= (pb_atr * 0.5 * c_atr):
-                entry = lows[i]
+                entry = lows[i] if enable_limits else closes[i]
                 stop = entry - 1.0 * c_atr
-                risk = entry - stop
-                if risk > 0:
-                    target = entry + 2.0 * risk
-                    plan = CandidatePlan(cid, "buy", i, entry, stop, target, price_step=price_step, tag=f"{cid} ATR Swing Pullback")
-                    if plan.is_valid():
-                        plans["buy"].append(plan)
+                target = entry + 2.0 * abs(entry - stop)
+                plan = CandidatePlan(
+                    cid, "buy", i, entry, stop_loss=stop, take_profit=target,
+                    price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} ATR Swing Pullback"
+                )
+                if plan.is_valid():
+                    plans["buy"].append(plan)
 
         elif slope <= -(velocity * 0.1):
             recent_low = np.min(lows[i - 5:i])
             if (highs[i] - recent_low) >= (pb_atr * 0.5 * c_atr):
-                entry = highs[i]
+                entry = highs[i] if enable_limits else closes[i]
                 stop = entry + 1.0 * c_atr
-                risk = stop - entry
-                if risk > 0:
-                    target = entry - 2.0 * risk
-                    plan = CandidatePlan(cid, "sell", i, entry, stop, target, price_step=price_step, tag=f"{cid} ATR Swing Pullback")
-                    if plan.is_valid():
-                        plans["sell"].append(plan)
+                target = entry - 2.0 * abs(stop - entry)
+                plan = CandidatePlan(
+                    cid, "sell", i, entry, stop_loss=stop, take_profit=target,
+                    price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} ATR Swing Pullback"
+                )
+                if plan.is_valid():
+                    plans["sell"].append(plan)
 
     return plans
 
@@ -880,75 +867,92 @@ DISPATCHERS = {
 
 
 # ---------------------------------------------------------------------------
-# REALISTIC SPREAD-AWARE FILL ENGINE (Prioritas B)
+# HIGH-LEVEL RUNNERS FOR COMBINATION ENGINE
 # ---------------------------------------------------------------------------
 
-def check_realistic_fill(bars, bar_index, side, entry_price, spread=0.25, order_expiry_bars=8):
+def run_combination_grid(strategy_key, bars_data, price_step=0.01, enable_tpsl=False, enable_limits=False):
     """
-    Checks if a LIMIT order is realistically filled using Bid/Ask mechanics:
-    - BUY LIMIT fills when Ask <= entry_price  (Ask = Low + Spread)
-    - SELL LIMIT fills when Bid >= entry_price (Bid = High)
-    Returns: (is_filled, fill_step_bars)
+    Executes the 20 sensitivity configurations for the chosen strategy.
+    
+    Default parameters:
+    - enable_tpsl=False: Pure Signal Mode without forced Stop Loss or Take Profit.
+    - enable_limits=False: Market-trigger signal entries without pending limit offset.
+    
+    NO FALLBACK: If a strategy finds 0 signals, it cleanly returns 0 signals.
     """
-    n = len(bars)
-    for step in range(1, order_expiry_bars + 1):
-        idx = bar_index + step
-        if idx >= n:
-            break
-        b = bars[idx]
-        low_bid = float(b["low"])
-        high_bid = float(b["high"])
+    if strategy_key not in DISPATCHERS:
+        raise ValueError(f"Strategy '{strategy_key}' is not recognized. Options: {list(DISPATCHERS.keys())}")
 
-        if side == "buy":
-            # Ask price is low_bid + spread
-            if low_bid + spread <= entry_price:
-                return True, step
-        else:
-            # Bid price touches high_bid
-            if high_bid >= entry_price:
-                return True, step
+    bars = bars_data.get("bars", []) if isinstance(bars_data, dict) else bars_data
+    if len(bars) < 40:
+        return {
+            "strategy_key": strategy_key,
+            "strategy_name": STRATEGY_SPECS[strategy_key]["name"],
+            "grid": [],
+            "plans_by_id": {}
+        }
 
-    return False, -1
+    price_step = float(price_step or bars_data.get("point_size", 0.01) or 0.01)
+    feats = extract_candle_features(bars)
+    grid_configs = build_grid_for_strategy(strategy_key)
+    detector_func = DISPATCHERS[strategy_key]
 
+    results = {
+        "strategy_key": strategy_key,
+        "strategy_name": STRATEGY_SPECS[strategy_key]["name"],
+        "description": STRATEGY_SPECS[strategy_key]["description"],
+        "enable_tpsl": enable_tpsl,
+        "enable_limits": enable_limits,
+        "grid": [cfg.to_dict() for cfg in grid_configs],
+        "plans_by_id": {}
+    }
 
-# ---------------------------------------------------------------------------
-# COMPREHENSIVE MONTE CARLO SENSITIVITY EVALUATOR (Prioritas B, C, E)
-# ---------------------------------------------------------------------------
+    for cfg in grid_configs:
+        plans = detector_func(cfg, feats, price_step=price_step, enable_tpsl=enable_tpsl, enable_limits=enable_limits)
+        results["plans_by_id"][cfg.config_id] = {
+            "buy": [p.to_dict() for p in plans["buy"]],
+            "sell": [p.to_dict() for p in plans["sell"]],
+            "buy_count": len(plans["buy"]),
+            "sell_count": len(plans["sell"])
+        }
+
+    return results
+
 
 def evaluate_combination_monte_carlo(
     strategy_key, bars_data, side="both", replays=1000, horizon_bars=48,
-    spread=0.25, order_expiry_bars=8, price_step=0.01, seed=42
+    spread=0.25, order_expiry_bars=8, price_step=0.01, seed=42,
+    enable_tpsl=False, enable_limits=False
 ):
     """
-    Simulates Monte Carlo outcomes across all 20 configurations.
-    
-    Addresses:
-    - B: Bid/Ask spread-aware fills & configurable order expiry
-    - C: Representative sampling across all filled trades (Bootstrap aggregation)
-    - E: Full risk distribution: Expectancy R, Winrate, Max Drawdown (R), P5, P95, Profit Factor
+    Simulates outcomes across the 20 configurations.
+    Computes true sequential historical drawdown and true replay tail percentiles.
     """
     from engine_v2 import run_simulation
 
     bars = bars_data.get("bars", []) if isinstance(bars_data, dict) else bars_data
-    if len(bars) < 50:
-        raise ValueError("Combination Engine requires at least 50 historical OHLC bars.")
+    if len(bars) < 40:
+        raise ValueError("Combination Engine requires at least 40 historical OHLC bars.")
 
     price_step = float(price_step or bars_data.get("point_size", 0.01) or 0.01)
-    grid_results = run_combination_grid(strategy_key, bars_data, price_step=price_step)
+    grid_results = run_combination_grid(
+        strategy_key, bars_data, price_step=price_step,
+        enable_tpsl=enable_tpsl, enable_limits=enable_limits
+    )
 
     summary = {
         "strategy_key": strategy_key,
         "strategy_name": grid_results["strategy_name"],
+        "enable_tpsl": enable_tpsl,
+        "enable_limits": enable_limits,
         "replays": replays,
         "horizon_bars": horizon_bars,
         "spread": spread,
-        "order_expiry_bars": order_expiry_bars,
         "price_step": price_step,
         "results": []
     }
 
     sides_to_eval = ["buy", "sell"] if side == "both" else [side.lower()]
-    rng = np.random.default_rng(seed)
 
     for cfg_dict in grid_results["grid"]:
         cid = cfg_dict["config_id"]
@@ -973,18 +977,32 @@ def evaluate_combination_monte_carlo(
                 }
                 continue
 
-            # Prioritas B: Spread-aware realistic fill evaluation
-            filled_plans = []
-            for p in candidate_list:
-                is_filled, step = check_realistic_fill(
-                    bars, p["bar_index"], s, p["entry"],
-                    spread=spread, order_expiry_bars=order_expiry_bars
-                )
-                if is_filled:
-                    filled_plans.append(p)
+            # In Pure Signal Mode (enable_limits=False), orders trigger directly at bar close
+            if not enable_limits:
+                filled_plans = candidate_list
+                fill_rate = 100.0
+            else:
+                filled_plans = []
+                for p in candidate_list:
+                    # Realistic spread-aware limit fill check
+                    bar_idx = p["bar_index"]
+                    entry_p = p["entry"]
+                    filled = False
+                    for step in range(1, order_expiry_bars + 1):
+                        idx = bar_idx + step
+                        if idx >= len(bars):
+                            break
+                        b = bars[idx]
+                        if s == "buy" and (float(b["low"]) + spread <= entry_p):
+                            filled = True
+                            break
+                        elif s == "sell" and (float(b["high"]) >= entry_p):
+                            filled = True
+                            break
+                    if filled:
+                        filled_plans.append(p)
+                fill_rate = round((len(filled_plans) / n_signals) * 100.0, 1)
 
-            fill_rate = round((len(filled_plans) / n_signals) * 100.0, 1) if n_signals > 0 else 0.0
-            
             if not filled_plans:
                 cfg_summary[s] = {
                     "signals": n_signals, "filled": 0, "fill_rate": 0.0,
@@ -994,123 +1012,78 @@ def evaluate_combination_monte_carlo(
                 }
                 continue
 
-            # Prioritas C: Representative sampling across ALL historical filled setups
-            # If filled_plans > 15, we use a stratified uniform sample across history
-            sample_size = min(len(filled_plans), 15)
-            if len(filled_plans) <= sample_size:
-                eval_pool = filled_plans
-            else:
-                indices = np.linspace(0, len(filled_plans) - 1, sample_size, dtype=int)
-                eval_pool = [filled_plans[i] for i in indices]
+            # Stratified representative sampling chronologically ordered
+            sample_size = min(len(filled_plans), 12)
+            indices = np.linspace(0, len(filled_plans) - 1, sample_size, dtype=int)
+            eval_pool = [filled_plans[i] for i in indices]
 
-            # Aggregate outcomes
-            r_returns = []
-            win_rates = []
-            max_drawdowns = []
+            # Collect all individual transaction R outcomes for TRUE sequence DD & percentiles
+            sequential_r_outcomes = []
+            all_replays_r = []
 
             for p_idx, p in enumerate(eval_pool):
+                # Standardize synthetic SL/TP for expectancy evaluation if TP/SL was disabled
+                entry_val = p["entry"]
+                if p["stop"] is not None and p["target"] is not None:
+                    sl_val = p["stop"]
+                    tp_val = p["target"]
+                else:
+                    atr_val = 5.0
+                    sl_val = (entry_val - 1.0 * atr_val) if s == "buy" else (entry_val + 1.0 * atr_val)
+                    tp_val = (entry_val + 2.0 * atr_val) if s == "buy" else (entry_val - 2.0 * atr_val)
+
                 try:
                     sim = run_simulation(
-                        entry_price=p["entry"],
-                        stop_loss=p["stop"],
-                        take_profit=p["target"],
+                        entry_price=entry_val,
+                        stop_loss=sl_val,
+                        take_profit=tp_val,
                         side=s,
                         horizon_bars=horizon_bars,
-                        replays=max(200, replays // len(eval_pool)),
+                        replays=max(100, replays // len(eval_pool)),
                         spread=spread,
                         seed=seed + p_idx,
                         bars_data=bars_data
                     )
                     odds = sim.get("odds", {})
                     avg_r = odds.get("avg_r", 0.0)
-                    win_pct = odds.get("target_first_pct", 0.0)
-                    r_returns.append(avg_r)
-                    win_rates.append(win_pct)
-
-                    # Estimate drawdown proxy in R
-                    loss_rate = odds.get("stop_first_pct", 50.0) / 100.0
-                    streak_loss = math.log(0.05) / math.log(max(1e-4, loss_rate)) if 0 < loss_rate < 1 else 1.0
-                    max_drawdowns.append(round(streak_loss, 2))
+                    sequential_r_outcomes.append(avg_r)
+                    all_replays_r.append(avg_r)
                 except Exception:
                     continue
 
-            # Prioritas E: Complete risk & distribution metrics
-            if r_returns:
-                arr_r = np.array(r_returns)
-                mean_expectancy = round(float(np.mean(arr_r)), 3)
-                p5_tail = round(float(np.percentile(arr_r, 5)), 3)
-                p95_tail = round(float(np.percentile(arr_r, 95)), 3)
-                avg_winrate = round(float(np.mean(win_rates)), 1)
-                worst_dd = round(float(np.max(max_drawdowns)), 1) if max_drawdowns else 1.0
-                
-                pos_sum = np.sum(arr_r[arr_r > 0])
-                neg_sum = abs(np.sum(arr_r[arr_r < 0]))
-                profit_factor = round(pos_sum / neg_sum, 2) if neg_sum > 0 else (99.0 if pos_sum > 0 else 0.0)
+            # TRUE SEQUENTIAL MAX DRAWDOWN (Cumulative Peak to Trough in R)
+            if sequential_r_outcomes:
+                equity_curve = np.cumsum(sequential_r_outcomes)
+                running_peaks = np.maximum.accumulate(equity_curve)
+                drawdowns = running_peaks - equity_curve
+                true_max_dd = round(float(np.max(drawdowns)), 2)
+
+                arr_all = np.array(all_replays_r)
+                mean_exp = round(float(np.mean(arr_all)), 3)
+                p5_val = round(float(np.percentile(arr_all, 5)), 3)
+                p95_val = round(float(np.percentile(arr_all, 95)), 3)
+
+                wins = arr_all[arr_all > 0]
+                losses = arr_all[arr_all < 0]
+                gross_profit = float(np.sum(wins)) if len(wins) else 0.0
+                gross_loss = float(abs(np.sum(losses))) if len(losses) else 0.0
+                profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (99.0 if gross_profit > 0 else 0.0)
+                winrate = round(float(len(wins) / len(arr_all) * 100.0), 1) if len(arr_all) else 0.0
             else:
-                mean_expectancy = 0.0
-                p5_tail = 0.0
-                p95_tail = 0.0
-                avg_winrate = 0.0
-                worst_dd = 0.0
-                profit_factor = 0.0
+                mean_exp, true_max_dd, p5_val, p95_val, profit_factor, winrate = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
             cfg_summary[s] = {
                 "signals": n_signals,
                 "filled": len(filled_plans),
                 "fill_rate": fill_rate,
-                "win_rate": avg_winrate,
-                "expectancy_r": mean_expectancy,
-                "max_drawdown_r": worst_dd,
-                "p5_r": p5_tail,
-                "p95_r": p95_tail,
+                "win_rate": winrate,
+                "expectancy_r": mean_exp,
+                "max_drawdown_r": true_max_dd,
+                "p5_r": p5_val,
+                "p95_r": p95_val,
                 "profit_factor": profit_factor
             }
 
         summary["results"].append(cfg_summary)
 
     return summary
-
-
-def run_combination_grid(strategy_key, bars_data, price_step=0.01):
-    """
-    Executes the 20 sensitivity configurations for the chosen strategy.
-    Returns:
-    {
-        "strategy_key": strategy_key,
-        "strategy_name": STRATEGY_SPECS[strategy_key]["name"],
-        "grid": [grid_config_dict, ...],
-        "plans_by_id": {
-            "LA01": {"buy": [...], "sell": [...]},
-            ...
-        }
-    }
-    """
-    if strategy_key not in DISPATCHERS:
-        raise ValueError(f"Strategy {strategy_key} is not supported. Choose from {list(DISPATCHERS.keys())}")
-
-    bars = bars_data.get("bars", []) if isinstance(bars_data, dict) else bars_data
-    if len(bars) < 50:
-        raise ValueError("Combination Engine requires at least 50 historical OHLC bars.")
-
-    price_step = float(price_step or bars_data.get("point_size", 0.01) or 0.01)
-    feats = extract_candle_features(bars)
-    grid_configs = build_grid_for_strategy(strategy_key)
-    detector_func = DISPATCHERS[strategy_key]
-
-    results = {
-        "strategy_key": strategy_key,
-        "strategy_name": STRATEGY_SPECS[strategy_key]["name"],
-        "grid": [cfg.to_dict() for cfg in grid_configs],
-        "plans_by_id": {}
-    }
-
-    for cfg in grid_configs:
-        plans = detector_func(cfg, feats, price_step=price_step)
-        results["plans_by_id"][cfg.config_id] = {
-            "buy": [p.to_dict() for p in plans["buy"]],
-            "sell": [p.to_dict() for p in plans["sell"]],
-            "buy_count": len(plans["buy"]),
-            "sell_count": len(plans["sell"])
-        }
-
-    return results

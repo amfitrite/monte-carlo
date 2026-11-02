@@ -1202,11 +1202,9 @@ def _candidate_entries_footprint(side, metrics, bars, candidate_count=0):
 
 
 def _candidate_entries(side, metrics, bars=None, strategy="atr_swing", candidate_count=0):
-    """Dispatcher to build candidate limits based on selected strategy."""
+    """Dispatcher to build candidate limits based on selected strategy. Cleanly returns [] if no signals found."""
     strat = str(strategy or "atr_swing").strip().lower()
 
-    # Prioritas A: Jika candidate_count == 20 (atau mode sensitivitas grid aktif),
-    # manfaatkan combination_engine untuk mengekstrak entri dari 20 konfigurasi sensitivitas
     strat_key_map = {
         "absorption": "absorption", "liquidity_absorption": "absorption", "bubbles": "absorption",
         "sweep_sms": "sweep_sms", "sms": "sweep_sms",
@@ -1219,6 +1217,7 @@ def _candidate_entries(side, metrics, bars=None, strategy="atr_swing", candidate
         "atr_swing": "atr_swing", "atr": "atr_swing"
     }
 
+    # Jika candidate_count == 20 (Grid Mode), manfaatkan combination_engine
     if candidate_count == 20 and bars and len(bars) >= 40:
         c_key = strat_key_map.get(strat, "atr_swing")
         try:
@@ -1228,37 +1227,46 @@ def _candidate_entries(side, metrics, bars=None, strategy="atr_swing", candidate
             for cid, cdata in plans_by_id.items():
                 items = cdata.get(side, [])
                 if items:
-                    # Ambil setup sinyal paling baru dari konfigurasi ini
                     p = items[-1]
                     side_plans.append(CandidateEntry(
-                        p["entry"], stop=p["stop"], target=p["target"], tag=f"[{cid}] {p.get('tag', '')}"
+                        p["entry"], stop=p.get("stop"), target=p.get("target"), tag=f"[{cid}] {p.get('tag', '')}"
                     ))
             if side_plans:
-                # Urutkan berdasarkan jarak terhadap harga sekarang
                 cur = metrics["current_price"]
                 side_plans.sort(key=lambda x: abs(float(x) - cur))
                 return side_plans[:20]
         except Exception:
             pass
+        return []
 
     if strat in ("poc", "breakout + poc retest", "poc_retest"):
-        return _candidate_entries_poc(side, metrics, bars or [], candidate_count=candidate_count)
+        res = _candidate_entries_poc(side, metrics, bars or [], candidate_count=candidate_count)
+        return [c for c in res if not getattr(c, "tag", "").startswith("ATR Fallback")]
     elif strat in ("fvg", "liquidity sweep + fvg", "sweep_fvg"):
-        return _candidate_entries_fvg(side, metrics, bars or [], candidate_count=candidate_count)
+        res = _candidate_entries_fvg(side, metrics, bars or [], candidate_count=candidate_count)
+        return [c for c in res if not getattr(c, "tag", "").startswith("ATR Fallback")]
     elif strat in ("orb", "session orb", "session orb (asia/london/ny)"):
-        return _candidate_entries_orb(side, metrics, bars or [], candidate_count=candidate_count)
+        res = _candidate_entries_orb(side, metrics, bars or [], candidate_count=candidate_count)
+        return [c for c in res if not getattr(c, "tag", "").startswith("ATR Fallback")]
     elif strat in ("zscore", "bollinger extremes (z-score)", "bollinger", "mean_reversion"):
-        return _candidate_entries_zscore(side, metrics, bars or [], candidate_count=candidate_count)
+        res = _candidate_entries_zscore(side, metrics, bars or [], candidate_count=candidate_count)
+        return [c for c in res if not getattr(c, "tag", "").startswith("ATR Fallback")]
     elif strat in ("acc_ifvg", "accumulation + ifvg", "ifvg"):
-        return _candidate_entries_acc_ifvg(side, metrics, bars or [], candidate_count=candidate_count)
+        res = _candidate_entries_acc_ifvg(side, metrics, bars or [], candidate_count=candidate_count)
+        return [c for c in res if not getattr(c, "tag", "").startswith("ATR Fallback")]
     elif strat in ("sweep_sms", "sweep + sms", "sms"):
-        return _candidate_entries_sweep_sms(side, metrics, bars or [], candidate_count=candidate_count)
+        res = _candidate_entries_sweep_sms(side, metrics, bars or [], candidate_count=candidate_count)
+        return [c for c in res if not getattr(c, "tag", "").startswith("ATR Fallback")]
     elif strat in ("absorption", "heatmap", "bubbles", "liquidity_absorption"):
-        return _candidate_entries_absorption(side, metrics, bars or [], candidate_count=candidate_count)
+        res = _candidate_entries_absorption(side, metrics, bars or [], candidate_count=candidate_count)
+        return [c for c in res if not getattr(c, "tag", "").startswith("ATR Fallback")]
     elif strat in ("footprint", "orderflow", "delta_absorption"):
-        return _candidate_entries_footprint(side, metrics, bars or [], candidate_count=candidate_count)
-    else:
+        res = _candidate_entries_footprint(side, metrics, bars or [], candidate_count=candidate_count)
+        return [c for c in res if not getattr(c, "tag", "").startswith("ATR Fallback")]
+    elif strat in ("atr_swing", "atr pullback & swing (default)", "atr pullback & swing", "atr"):
         return _candidate_entries_atr_swing(side, metrics, candidate_count=candidate_count)
+    else:
+        return []
 
 
 
