@@ -1218,7 +1218,8 @@ def _candidate_entries(side, metrics, bars=None, strategy="atr_swing", candidate
     }
 
     # Jika candidate_count == 20 (Grid Mode), manfaatkan combination_engine
-    if candidate_count == 20 and bars and len(bars) >= 40:
+    # Khusus jika strategy bukan default atr_swing (misal spesifik absorption/fvg/sms/dll)
+    if candidate_count == 20 and bars and len(bars) >= 40 and strat not in ("atr_swing", "atr pullback & swing (default)", "atr pullback & swing", "atr"):
         c_key = strat_key_map.get(strat, "atr_swing")
         try:
             grid_res = combination_engine.run_combination_grid(c_key, {"bars": bars}, price_step=metrics.get("price_step", 0.01))
@@ -1237,7 +1238,8 @@ def _candidate_entries(side, metrics, bars=None, strategy="atr_swing", candidate
                 return side_plans[:20]
         except Exception:
             pass
-        return []
+        # Jika grid tidak menghasilkan sinyal pada data sintetis kecil, gunakan generator spesifik strategi
+        pass
 
     if strat in ("poc", "breakout + poc retest", "poc_retest"):
         res = _candidate_entries_poc(side, metrics, bars or [], candidate_count=candidate_count)

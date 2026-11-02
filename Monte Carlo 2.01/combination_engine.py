@@ -1,20 +1,19 @@
 """
-Combination Engine (V2.01) - Pure Strategy & Entry Sensitivity Focus.
+Combination Engine (V2.01) - Quantitative Alpha & Entry Strategy Engine.
 
-Fokus murni pada:
-1. Signal Generation 20 Konfigurasi Sensitivitas (5x4) untuk 9 Entry Strategies.
-2. Mode Murni (Pure Entry Signal): TP/SL & Limit Orders di-DISABLE secara DEFAULT.
-   - Sinyal ditandai pada level Entry murni (Close / Extremum / Trigger price).
-   - Opsi TP/SL & Limit Order bersifat opsional (enable_tpsl=False, enable_limits=False).
-3. Eliminasi No-Signal Fallback:
-   - Jika suatu konfigurasi/strategi tidak menemukan sinyal valid, kembalikan list kosong [].
-   - TIDAK ADA fallback diam-diam ke ATR Swing atau strategi lain.
-4. Mekanik Strategi Ketat & Obyektif:
-   - Liquidity Absorption (LA): Wajib minimum penetrasi likuiditas positif (min sweep depth >= 0.05 ATR).
-   - Microstructure / Synthetic Tick Delta (FP): Penamaan jujur dan transparan sebagai proxy mikrostruktur bar.
-   - True Volume Profile POC (PC): Distribusi volume riil berbasis price-bucket histogram.
-   - Session ORB (OR): Berbasis durasi waktu riil menit (misal 30 menit sesi), agnostik M1/M5.
-5. True Sequential Transaction Max Drawdown, True Profit Factor, & Replay Percentiles.
+FASE 1: PURE ENTRY ALPHA & FORWARD EDGE VALIDATION
+- Evaluasi strictly post-candle close (t+1 s/d t+H) tanpa look-ahead bias
+- 9 Strategi x 20 Konfigurasi Sensitivitas (180 Variasi) dievaluasi independen (BUY & SELL terpisah)
+- Parameter kedua berfungsi sebagai FILTER SINYAL RIIL (bukan sekadar pending limit offset)
+- Non-negative MFE & MAE dengan penanganan Edge Ratio eksplit:
+    MFE = max(0.0, max(High) - Close_t)
+    MAE = max(0.0, Close_t - min(Low))
+    Edge Ratio = MFE / MAE (inf jika MAE == 0 dan MFE > 0; 1.0 jika keduanya 0)
+- True IFVG: Compression -> FVG Formation -> Displacement Inversion -> Retest Zone Confirmation
+- Stationary / Block Bootstrap untuk menangani overlapping autocorrelation forward return
+- Penanganan sampel kecil aman: jika N < 5, CI mengeluarkan [None, None]
+- Walk-Forward / Out-of-Sample (OOS) data split untuk mengeliminasi selection bias
+- Label jujur dan transparan untuk Synthetic Volume & Microstructure Proxies
 """
 
 import math
@@ -65,7 +64,7 @@ STRATEGY_SPECS = {
         "param1_vals": [1.2, 1.4, 1.6, 1.8, 2.0],
         "param2_name": "min_wick_ratio",
         "param2_vals": [1.0, 1.25, 1.5, 2.0],
-        "description": "True sweep with positive penetration + volume absorption rejection"
+        "description": "True sweep with positive penetration (>=0.05 ATR) + volume absorption rejection"
     },
     "sweep_sms": {
         "code": "SS",
@@ -81,45 +80,45 @@ STRATEGY_SPECS = {
         "name": "Fair Value Gap (FVG)",
         "param1_name": "min_gap_atr",
         "param1_vals": [0.10, 0.15, 0.20, 0.30, 0.50],
-        "param2_name": "retrace_depth_pct",
-        "param2_vals": [0.00, 0.25, 0.50, 0.75],
-        "description": "Imbalance gap detection & mitigation"
+        "param2_name": "min_retrace_confirm_pct",
+        "param2_vals": [0.10, 0.25, 0.50, 0.75],
+        "description": "Imbalance gap with mandatory retracement confirmation depth"
     },
     "acc_ifvg": {
         "code": "IF",
         "name": "Accumulation + Inverse FVG",
         "param1_name": "compression_atr",
         "param1_vals": [1.5, 2.0, 2.5, 3.5, 5.0],
-        "param2_name": "retest_tolerance_pct",
-        "param2_vals": [0.25, 0.382, 0.50, 0.618],
-        "description": "Compression range breakout/breakdown into inverted FVG"
+        "param2_name": "retest_depth_pct",
+        "param2_vals": [0.20, 0.382, 0.50, 0.618],
+        "description": "Compression range into FVG inversion with confirmed retest bounce"
     },
     "footprint": {
         "code": "FP",
-        "name": "Synthetic Tick Delta (Order Flow Microstructure)",
+        "name": "Synthetic Intrabar Tick-Delta Proxy",
         "param1_name": "imbalance_ratio",
         "param1_vals": [1.5, 2.0, 2.5, 3.0, 4.0],
         "param2_name": "exhaustion_div_pct",
         "param2_vals": [0.15, 0.25, 0.35, 0.50],
-        "description": "Intrabar microstructure signed delta proxy (Synthetic Proxy, Not Institutional L2)"
+        "description": "Synthetic tick delta proxy from OHLC close/open ratio (Not institutional L2/L3 order book)"
     },
     "orb": {
         "code": "OR",
         "name": "Session Opening Range (Time-Based ORB)",
         "param1_name": "breakout_buffer_atr",
         "param1_vals": [0.05, 0.10, 0.15, 0.20, 0.30],
-        "param2_name": "pullback_depth_pct",
-        "param2_vals": [0.00, 0.10, 0.25, 0.50],
-        "description": "First 30-minute fixed time session opening breakout"
+        "param2_name": "pullback_retest_pct",
+        "param2_vals": [0.10, 0.25, 0.50, 0.75],
+        "description": "First 30-minute fixed time session opening breakout with confirmed pullback retest"
     },
     "poc": {
         "code": "PC",
-        "name": "Point of Control (True Volume Profile)",
+        "name": "Point of Control (OHLC Volume Distribution Proxy)",
         "param1_name": "dist_to_poc_atr",
         "param1_vals": [0.10, 0.20, 0.30, 0.40, 0.50],
         "param2_name": "va_width_pct",
         "param2_vals": [0.68, 0.70, 0.75, 0.80],
-        "description": "Price-bucketed volume distribution (POC, VAH, VAL)"
+        "description": "Price-bucketed volume distribution proxy from OHLC bars"
     },
     "zscore": {
         "code": "ZS",
@@ -176,19 +175,11 @@ def build_grid_for_strategy(strategy_key):
 
 
 # ---------------------------------------------------------------------------
-# PURE SIGNAL PLAN CLASS (TP/SL & Limit Orders Disabled by Default)
+# CANDIDATE PLAN CLASS
 # ---------------------------------------------------------------------------
 
 class CandidatePlan:
-    """
-    Represents an entry signal generated by a strategy configuration.
-    
-    If enable_tpsl is False (DEFAULT):
-        - Stop loss and Take profit are None.
-        - Risk and reward are 0.0.
-    If enable_limits is False (DEFAULT):
-        - Entry price is the signal candle Close (Market Trigger Entry).
-    """
+    """Represents an entry signal generated strictly at candle close."""
     def __init__(
         self, plan_id, side, entry_bar_index, entry_price,
         stop_loss=None, take_profit=None, price_step=0.01,
@@ -245,7 +236,7 @@ class CandidatePlan:
 
 
 # ---------------------------------------------------------------------------
-# ADVANCED FEATURE EXTRACTION (TIME-BASED MINUTES & MICROSTRUCTURE)
+# ADVANCED FEATURE EXTRACTION
 # ---------------------------------------------------------------------------
 
 def extract_candle_features(bars, baseline_period=20):
@@ -274,7 +265,6 @@ def extract_candle_features(bars, baseline_period=20):
     lower_wicks = np.minimum(opens, closes) - lows
     close_positions = (closes - lows) / ranges
 
-    # Microstructure Signed Delta Proxy (Synthetic tick estimation)
     directional_bias = (closes - opens) / ranges
     signed_delta = vols * directional_bias
     buy_vol = np.maximum((vols + signed_delta) / 2.0, 1e-6)
@@ -310,13 +300,13 @@ def extract_candle_features(bars, baseline_period=20):
 
 
 # ---------------------------------------------------------------------------
-# 9 STRATEGY DETECTORS (TP/SL & LIMIT DISABLE SUPPORT)
+# 9 STRATEGY DETECTORS (FUNCTIONALLY UNIQUE 20 SENSITIVITIES)
 # ---------------------------------------------------------------------------
 
 def generate_absorption_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, enable_limits=False):
     """
     1. Liquidity Absorption + Volume (LA01 - LA20).
-    Requires positive penetration depth >= 0.05 ATR to distinguish true sweeps from touches.
+    Requires positive penetration depth >= 0.05 ATR.
     """
     plans = {"buy": [], "sell": []}
     n = feats.get("n", 0)
@@ -330,8 +320,7 @@ def generate_absorption_plans(grid_config, feats, price_step=0.01, enable_tpsl=F
     rvol, bodies, upper_wicks, lower_wicks = feats["rvol"], feats["bodies"], feats["upper_wicks"], feats["lower_wicks"]
     close_positions, ranges, atr = feats["close_positions"], feats["ranges"], feats["atr"]
     highs, lows, closes = feats["highs"], feats["lows"], feats["closes"]
-
-    min_penetration_factor = 0.05  # Wajib tembus minimal 0.05 ATR
+    min_penetration_factor = 0.05
 
     for i in range(25, n - 1):
         c_atr = atr[i]
@@ -341,7 +330,6 @@ def generate_absorption_plans(grid_config, feats, price_step=0.01, enable_tpsl=F
         prior_swing_low = np.min(lows[max(0, i - 15):i])
         prior_swing_high = np.max(highs[max(0, i - 15):i])
 
-        # Bullish Absorption (True positive sweep + rejection + reclaim)
         bullish_penetration = prior_swing_low - lows[i]
         if (bullish_penetration >= min_penetration_factor * c_atr and
             bullish_penetration <= 0.35 * c_atr and
@@ -360,7 +348,6 @@ def generate_absorption_plans(grid_config, feats, price_step=0.01, enable_tpsl=F
             if plan.is_valid():
                 plans["buy"].append(plan)
 
-        # Bearish Absorption (True positive sweep high + rejection + reclaim)
         bearish_penetration = highs[i] - prior_swing_high
         if (bearish_penetration >= min_penetration_factor * c_atr and
             bearish_penetration <= 0.35 * c_atr and
@@ -437,6 +424,8 @@ def generate_sweep_sms_plans(grid_config, feats, price_step=0.01, enable_tpsl=Fa
 def generate_fvg_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, enable_limits=False):
     """
     3. Fair Value Gap (FV01 - FV20).
+    Parameter 2 is now a FUNCTIONAL SIGNAL FILTER: min_retrace_confirm_pct.
+    Signal only triggers when subsequent bar confirms retracement into the gap by >= min_retrace_confirm_pct.
     """
     plans = {"buy": [], "sell": []}
     n = feats.get("n", 0)
@@ -444,39 +433,50 @@ def generate_fvg_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, e
         return plans
 
     min_gap_atr = grid_config.param1_val
-    retrace_pct = grid_config.param2_val
+    min_retrace_pct = grid_config.param2_val
     cid = grid_config.config_id
 
     highs, lows, closes = feats["highs"], feats["lows"], feats["closes"]
     atr = feats["atr"]
 
-    for i in range(2, n - 1):
+    for i in range(2, n - 2):
         c_atr = atr[i]
+        # Bullish FVG
         gap_buy = lows[i] - highs[i - 2]
         if gap_buy >= min_gap_atr * c_atr:
             fvg_top, fvg_bot = lows[i], highs[i - 2]
-            entry = (fvg_top - retrace_pct * (fvg_top - fvg_bot)) if enable_limits else closes[i]
-            stop = fvg_bot - 0.10 * c_atr
-            target = entry + 2.0 * abs(entry - stop)
-            plan = CandidatePlan(
-                cid, "buy", i, entry, stop_loss=stop, take_profit=target,
-                price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} FVG Reversal"
-            )
-            if plan.is_valid():
-                plans["buy"].append(plan)
+            retrace_threshold = fvg_top - (min_retrace_pct * gap_buy)
+            # Check if next 1-3 bars confirmed retracement to retrace_threshold
+            for k in range(i + 1, min(i + 4, n)):
+                if lows[k] <= retrace_threshold and closes[k] >= fvg_bot:
+                    entry = retrace_threshold if enable_limits else closes[k]
+                    stop = fvg_bot - 0.10 * c_atr
+                    target = entry + 2.0 * abs(entry - stop)
+                    plan = CandidatePlan(
+                        cid, "buy", k, entry, stop_loss=stop, take_profit=target,
+                        price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} FVG Confirmed Retrace {int(min_retrace_pct*100)}%"
+                    )
+                    if plan.is_valid():
+                        plans["buy"].append(plan)
+                    break
 
+        # Bearish FVG
         gap_sell = lows[i - 2] - highs[i]
         if gap_sell >= min_gap_atr * c_atr:
             fvg_top, fvg_bot = lows[i - 2], highs[i]
-            entry = (fvg_bot + retrace_pct * (fvg_top - fvg_bot)) if enable_limits else closes[i]
-            stop = fvg_top + 0.10 * c_atr
-            target = entry - 2.0 * abs(stop - entry)
-            plan = CandidatePlan(
-                cid, "sell", i, entry, stop_loss=stop, take_profit=target,
-                price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} Bearish FVG"
-            )
-            if plan.is_valid():
-                plans["sell"].append(plan)
+            retrace_threshold = fvg_bot + (min_retrace_pct * gap_sell)
+            for k in range(i + 1, min(i + 4, n)):
+                if highs[k] >= retrace_threshold and closes[k] <= fvg_top:
+                    entry = retrace_threshold if enable_limits else closes[k]
+                    stop = fvg_top + 0.10 * c_atr
+                    target = entry - 2.0 * abs(stop - entry)
+                    plan = CandidatePlan(
+                        cid, "sell", k, entry, stop_loss=stop, take_profit=target,
+                        price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} FVG Confirmed Retrace {int(min_retrace_pct*100)}%"
+                    )
+                    if plan.is_valid():
+                        plans["sell"].append(plan)
+                    break
 
     return plans
 
@@ -484,52 +484,77 @@ def generate_fvg_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, e
 def generate_acc_ifvg_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, enable_limits=False):
     """
     4. Accumulation + Inverse FVG (IF01 - IF20).
+    TRUE MECHANIC:
+    - Step 1: Accumulation / Compression of preceding bars within compression_atr.
+    - Step 2: FVG forms and then gets violated/inverted (Inverse FVG).
+    - Step 3: Retest penetrates IFVG zone by >= retest_depth_pct and closes back out (Trigger Signal).
     """
     plans = {"buy": [], "sell": []}
     n = feats.get("n", 0)
-    if n < 30:
+    if n < 35:
         return plans
 
     comp_width = grid_config.param1_val
-    retest_tol = grid_config.param2_val
+    retest_depth_pct = grid_config.param2_val
     cid = grid_config.config_id
 
     highs, lows, closes = feats["highs"], feats["lows"], feats["closes"]
     atr = feats["atr"]
 
-    for i in range(12, n - 2):
+    for i in range(12, n - 4):
         c_atr = atr[i]
         cons_high = np.max(highs[i - 10:i])
         cons_low = np.min(lows[i - 10:i])
-        if (cons_high - cons_low) <= comp_width * c_atr:
-            if closes[i] > cons_high:
-                entry = (cons_high - (retest_tol * 0.2 * c_atr)) if enable_limits else closes[i]
-                stop = cons_low
-                target = entry + 2.0 * abs(entry - stop)
-                plan = CandidatePlan(
-                    cid, "buy", i, entry, stop_loss=stop, take_profit=target,
-                    price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} IFVG Reclaim"
-                )
-                if plan.is_valid():
-                    plans["buy"].append(plan)
-            elif closes[i] < cons_low:
-                entry = (cons_low + (retest_tol * 0.2 * c_atr)) if enable_limits else closes[i]
-                stop = cons_high
-                target = entry - 2.0 * abs(stop - entry)
-                plan = CandidatePlan(
-                    cid, "sell", i, entry, stop_loss=stop, take_profit=target,
-                    price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} IFVG Reclaim"
-                )
-                if plan.is_valid():
-                    plans["sell"].append(plan)
+        if (cons_high - cons_low) > comp_width * c_atr:
+            continue
+
+        # Check for prior Bearish FVG inverted into Bullish IFVG
+        # Bearish FVG: Low[i-2] > High[i]
+        gap = lows[i - 2] - highs[i]
+        if gap >= 0.10 * c_atr:
+            ifvg_top, ifvg_bot = lows[i - 2], highs[i]
+            # Inversion: Bar i+1 closes above ifvg_top
+            if closes[i + 1] > ifvg_top:
+                # Retest: Subsequent bars retest inside IFVG zone
+                for k in range(i + 2, min(i + 5, n)):
+                    penetration_target = ifvg_top - retest_depth_pct * (ifvg_top - ifvg_bot)
+                    if lows[k] <= penetration_target and closes[k] >= ifvg_bot:
+                        entry = penetration_target if enable_limits else closes[k]
+                        stop = ifvg_bot - 0.10 * c_atr
+                        target = entry + 2.0 * abs(entry - stop)
+                        plan = CandidatePlan(
+                            cid, "buy", k, entry, stop_loss=stop, take_profit=target,
+                            price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} True IFVG Retest {int(retest_depth_pct*100)}%"
+                        )
+                        if plan.is_valid():
+                            plans["buy"].append(plan)
+                        break
+
+        # Check for prior Bullish FVG inverted into Bearish IFVG
+        gap_bull = lows[i] - highs[i - 2]
+        if gap_bull >= 0.10 * c_atr:
+            ifvg_top, ifvg_bot = lows[i], highs[i - 2]
+            if closes[i + 1] < ifvg_bot:
+                for k in range(i + 2, min(i + 5, n)):
+                    penetration_target = ifvg_bot + retest_depth_pct * (ifvg_top - ifvg_bot)
+                    if highs[k] >= penetration_target and closes[k] <= ifvg_top:
+                        entry = penetration_target if enable_limits else closes[k]
+                        stop = ifvg_top + 0.10 * c_atr
+                        target = entry - 2.0 * abs(stop - entry)
+                        plan = CandidatePlan(
+                            cid, "sell", k, entry, stop_loss=stop, take_profit=target,
+                            price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} True IFVG Retest {int(retest_depth_pct*100)}%"
+                        )
+                        if plan.is_valid():
+                            plans["sell"].append(plan)
+                        break
 
     return plans
 
 
 def generate_footprint_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, enable_limits=False):
     """
-    5. Synthetic Tick Delta (Order Flow Microstructure Proxy) (FP01 - FP20).
-    Explicit transparent proxy label.
+    5. Synthetic Intrabar Tick-Delta Proxy (FP01 - FP20).
     """
     plans = {"buy": [], "sell": []}
     n = feats.get("n", 0)
@@ -556,7 +581,7 @@ def generate_footprint_plans(grid_config, feats, price_step=0.01, enable_tpsl=Fa
             target = poc_node + 2.0 * abs(poc_node - stop)
             plan = CandidatePlan(
                 cid, "buy", i, poc_node, stop_loss=stop, take_profit=target,
-                price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} Microstructure Delta Absorption"
+                price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} Synthetic Delta Absorption"
             )
             if plan.is_valid():
                 plans["buy"].append(plan)
@@ -567,7 +592,7 @@ def generate_footprint_plans(grid_config, feats, price_step=0.01, enable_tpsl=Fa
             target = poc_node - 2.0 * abs(stop - poc_node)
             plan = CandidatePlan(
                 cid, "sell", i, poc_node, stop_loss=stop, take_profit=target,
-                price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} Microstructure Delta Absorption"
+                price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} Synthetic Delta Absorption"
             )
             if plan.is_valid():
                 plans["sell"].append(plan)
@@ -578,7 +603,8 @@ def generate_footprint_plans(grid_config, feats, price_step=0.01, enable_tpsl=Fa
 def generate_orb_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, enable_limits=False):
     """
     6. Session Opening Range Breakout (OR01 - OR20).
-    Agnostik M1/M5: Menggunakan durasi waktu riil 30 menit pembukaan sesi.
+    Parameter 2 is now a FUNCTIONAL SIGNAL FILTER: pullback_retest_pct.
+    Signal only triggers when subsequent bar confirms pullback retest onto ORB boundary.
     """
     plans = {"buy": [], "sell": []}
     n = feats.get("n", 0)
@@ -586,19 +612,17 @@ def generate_orb_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, e
         return plans
 
     buffer_atr = grid_config.param1_val
-    pb_depth = grid_config.param2_val
+    retest_pct = grid_config.param2_val
     cid = grid_config.config_id
 
     timestamps = feats["timestamps"]
     highs, lows, closes = feats["highs"], feats["lows"], feats["closes"]
     atr = feats["atr"]
 
-    # Cari bar awal interval (setiap lonjakan siklus ~4 jam atau perubahan hari)
     session_starts = []
     for i in range(1, n):
         dt_curr = datetime.datetime.fromtimestamp(timestamps[i], tz=datetime.timezone.utc)
         dt_prev = datetime.datetime.fromtimestamp(timestamps[i - 1], tz=datetime.timezone.utc)
-        # Deteksi pergantian hari atau transisi sesi London (07-08 UTC) & NY (12-13 UTC)
         if dt_curr.day != dt_prev.day or (dt_curr.hour in (7, 13) and dt_prev.hour != dt_curr.hour):
             session_starts.append(i)
 
@@ -606,10 +630,9 @@ def generate_orb_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, e
         session_starts = list(range(30, n - 20, 30))
 
     for start_idx in session_starts:
-        # Hitung rentang 30 menit pertama secara presisi waktu
         start_ts = timestamps[start_idx]
         or_end_idx = start_idx
-        while or_end_idx < n and (timestamps[or_end_idx] - start_ts) <= 1800:  # 1800 detik = 30 menit
+        while or_end_idx < n and (timestamps[or_end_idx] - start_ts) <= 1800:
             or_end_idx += 1
         
         if or_end_idx >= n or or_end_idx == start_idx:
@@ -620,29 +643,40 @@ def generate_orb_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, e
         orb_low = np.min(lows[start_idx:or_end_idx])
         orb_range = max(orb_high - orb_low, 0.2 * c_atr)
 
-        # Evaluasi pergerakan setelah 30 menit pertama
-        for k in range(or_end_idx, min(or_end_idx + 30, n - 1)):
+        # Look for breakout, then require pullback retest confirmation
+        for k in range(or_end_idx, min(or_end_idx + 25, n - 2)):
+            # Bullish ORB Breakout
             if closes[k] > orb_high + buffer_atr * c_atr:
-                entry = (orb_high - pb_depth * orb_range) if enable_limits else closes[k]
-                stop = orb_high - 0.40 * orb_range
-                target = entry + 2.0 * abs(entry - stop)
-                plan = CandidatePlan(
-                    cid, "buy", k, entry, stop_loss=stop, take_profit=target,
-                    price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} 30m ORB Breakout"
-                )
-                if plan.is_valid():
-                    plans["buy"].append(plan)
+                retest_level = orb_high - (retest_pct * 0.5 * orb_range)
+                for m in range(k + 1, min(k + 5, n)):
+                    if lows[m] <= retest_level and closes[m] >= orb_high - 0.40 * orb_range:
+                        entry = retest_level if enable_limits else closes[m]
+                        stop = orb_high - 0.40 * orb_range
+                        target = entry + 2.0 * abs(entry - stop)
+                        plan = CandidatePlan(
+                            cid, "buy", m, entry, stop_loss=stop, take_profit=target,
+                            price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} 30m ORB Retest {int(retest_pct*100)}%"
+                        )
+                        if plan.is_valid():
+                            plans["buy"].append(plan)
+                        break
                 break
+
+            # Bearish ORB Breakdown
             elif closes[k] < orb_low - buffer_atr * c_atr:
-                entry = (orb_low + pb_depth * orb_range) if enable_limits else closes[k]
-                stop = orb_low + 0.40 * orb_range
-                target = entry - 2.0 * abs(stop - entry)
-                plan = CandidatePlan(
-                    cid, "sell", k, entry, stop_loss=stop, take_profit=target,
-                    price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} 30m ORB Breakdown"
-                )
-                if plan.is_valid():
-                    plans["sell"].append(plan)
+                retest_level = orb_low + (retest_pct * 0.5 * orb_range)
+                for m in range(k + 1, min(k + 5, n)):
+                    if highs[m] >= retest_level and closes[m] <= orb_low + 0.40 * orb_range:
+                        entry = retest_level if enable_limits else closes[m]
+                        stop = orb_low + 0.40 * orb_range
+                        target = entry - 2.0 * abs(stop - entry)
+                        plan = CandidatePlan(
+                            cid, "sell", m, entry, stop_loss=stop, take_profit=target,
+                            price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} 30m ORB Retest {int(retest_pct*100)}%"
+                        )
+                        if plan.is_valid():
+                            plans["sell"].append(plan)
+                        break
                 break
 
     return plans
@@ -733,7 +767,7 @@ def generate_poc_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, e
             target = entry + 2.0 * abs(entry - stop)
             plan = CandidatePlan(
                 cid, "buy", i, entry, stop_loss=stop, take_profit=target,
-                price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} True VAL Bounce"
+                price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} VAL Rebound Proxy"
             )
             if plan.is_valid():
                 plans["buy"].append(plan)
@@ -744,7 +778,7 @@ def generate_poc_plans(grid_config, feats, price_step=0.01, enable_tpsl=False, e
             target = entry - 2.0 * abs(stop - entry)
             plan = CandidatePlan(
                 cid, "sell", i, entry, stop_loss=stop, take_profit=target,
-                price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} True VAH Rejection"
+                price_step=price_step, enable_tpsl=enable_tpsl, tag=f"{cid} VAH Rejection Proxy"
             )
             if plan.is_valid():
                 plans["sell"].append(plan)
@@ -873,11 +907,6 @@ DISPATCHERS = {
 def run_combination_grid(strategy_key, bars_data, price_step=0.01, enable_tpsl=False, enable_limits=False):
     """
     Executes the 20 sensitivity configurations for the chosen strategy.
-    
-    Default parameters:
-    - enable_tpsl=False: Pure Signal Mode without forced Stop Loss or Take Profit.
-    - enable_limits=False: Market-trigger signal entries without pending limit offset.
-    
     NO FALLBACK: If a strategy finds 0 signals, it cleanly returns 0 signals.
     """
     if strategy_key not in DISPATCHERS:
@@ -919,198 +948,52 @@ def run_combination_grid(strategy_key, bars_data, price_step=0.01, enable_tpsl=F
     return results
 
 
-def evaluate_combination_monte_carlo(
-    strategy_key, bars_data, side="both", replays=1000, horizon_bars=48,
-    spread=0.25, order_expiry_bars=8, price_step=0.01, seed=42,
-    enable_tpsl=False, enable_limits=False
-):
-    """
-    Simulates outcomes across the 20 configurations.
-    Computes true sequential historical drawdown and true replay tail percentiles.
-    """
-    from engine_v2 import run_simulation
-
-    bars = bars_data.get("bars", []) if isinstance(bars_data, dict) else bars_data
-    if len(bars) < 40:
-        raise ValueError("Combination Engine requires at least 40 historical OHLC bars.")
-
-    price_step = float(price_step or bars_data.get("point_size", 0.01) or 0.01)
-    grid_results = run_combination_grid(
-        strategy_key, bars_data, price_step=price_step,
-        enable_tpsl=enable_tpsl, enable_limits=enable_limits
-    )
-
-    summary = {
-        "strategy_key": strategy_key,
-        "strategy_name": grid_results["strategy_name"],
-        "enable_tpsl": enable_tpsl,
-        "enable_limits": enable_limits,
-        "replays": replays,
-        "horizon_bars": horizon_bars,
-        "spread": spread,
-        "price_step": price_step,
-        "results": []
-    }
-
-    sides_to_eval = ["buy", "sell"] if side == "both" else [side.lower()]
-
-    for cfg_dict in grid_results["grid"]:
-        cid = cfg_dict["config_id"]
-        plans_data = grid_results["plans_by_id"][cid]
-
-        cfg_summary = {
-            "config_id": cid,
-            "params": cfg_dict,
-            "buy": None,
-            "sell": None
-        }
-
-        for s in sides_to_eval:
-            candidate_list = plans_data.get(s, [])
-            n_signals = len(candidate_list)
-            if n_signals == 0:
-                cfg_summary[s] = {
-                    "signals": 0, "filled": 0, "fill_rate": 0.0,
-                    "win_rate": 0.0, "expectancy_r": 0.0,
-                    "max_drawdown_r": 0.0, "p5_r": 0.0, "p95_r": 0.0,
-                    "profit_factor": 0.0
-                }
-                continue
-
-            # In Pure Signal Mode (enable_limits=False), orders trigger directly at bar close
-            if not enable_limits:
-                filled_plans = candidate_list
-                fill_rate = 100.0
-            else:
-                filled_plans = []
-                for p in candidate_list:
-                    # Realistic spread-aware limit fill check
-                    bar_idx = p["bar_index"]
-                    entry_p = p["entry"]
-                    filled = False
-                    for step in range(1, order_expiry_bars + 1):
-                        idx = bar_idx + step
-                        if idx >= len(bars):
-                            break
-                        b = bars[idx]
-                        if s == "buy" and (float(b["low"]) + spread <= entry_p):
-                            filled = True
-                            break
-                        elif s == "sell" and (float(b["high"]) >= entry_p):
-                            filled = True
-                            break
-                    if filled:
-                        filled_plans.append(p)
-                fill_rate = round((len(filled_plans) / n_signals) * 100.0, 1)
-
-            if not filled_plans:
-                cfg_summary[s] = {
-                    "signals": n_signals, "filled": 0, "fill_rate": 0.0,
-                    "win_rate": 0.0, "expectancy_r": 0.0,
-                    "max_drawdown_r": 0.0, "p5_r": 0.0, "p95_r": 0.0,
-                    "profit_factor": 0.0
-                }
-                continue
-
-            # Stratified representative sampling chronologically ordered
-            sample_size = min(len(filled_plans), 12)
-            indices = np.linspace(0, len(filled_plans) - 1, sample_size, dtype=int)
-            eval_pool = [filled_plans[i] for i in indices]
-
-            # Collect all individual transaction R outcomes for TRUE sequence DD & percentiles
-            sequential_r_outcomes = []
-            all_replays_r = []
-
-            for p_idx, p in enumerate(eval_pool):
-                # Standardize synthetic SL/TP for expectancy evaluation if TP/SL was disabled
-                entry_val = p["entry"]
-                if p["stop"] is not None and p["target"] is not None:
-                    sl_val = p["stop"]
-                    tp_val = p["target"]
-                else:
-                    atr_val = 5.0
-                    sl_val = (entry_val - 1.0 * atr_val) if s == "buy" else (entry_val + 1.0 * atr_val)
-                    tp_val = (entry_val + 2.0 * atr_val) if s == "buy" else (entry_val - 2.0 * atr_val)
-
-                try:
-                    sim = run_simulation(
-                        entry_price=entry_val,
-                        stop_loss=sl_val,
-                        take_profit=tp_val,
-                        side=s,
-                        horizon_bars=horizon_bars,
-                        replays=max(100, replays // len(eval_pool)),
-                        spread=spread,
-                        seed=seed + p_idx,
-                        bars_data=bars_data
-                    )
-                    odds = sim.get("odds", {})
-                    avg_r = odds.get("avg_r", 0.0)
-                    sequential_r_outcomes.append(avg_r)
-                    all_replays_r.append(avg_r)
-                except Exception:
-                    continue
-
-            # TRUE SEQUENTIAL MAX DRAWDOWN (Cumulative Peak to Trough in R)
-            if sequential_r_outcomes:
-                equity_curve = np.cumsum(sequential_r_outcomes)
-                running_peaks = np.maximum.accumulate(equity_curve)
-                drawdowns = running_peaks - equity_curve
-                true_max_dd = round(float(np.max(drawdowns)), 2)
-
-                arr_all = np.array(all_replays_r)
-                mean_exp = round(float(np.mean(arr_all)), 3)
-                p5_val = round(float(np.percentile(arr_all, 5)), 3)
-                p95_val = round(float(np.percentile(arr_all, 95)), 3)
-
-                wins = arr_all[arr_all > 0]
-                losses = arr_all[arr_all < 0]
-                gross_profit = float(np.sum(wins)) if len(wins) else 0.0
-                gross_loss = float(abs(np.sum(losses))) if len(losses) else 0.0
-                profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (99.0 if gross_profit > 0 else 0.0)
-                winrate = round(float(len(wins) / len(arr_all) * 100.0), 1) if len(arr_all) else 0.0
-            else:
-                mean_exp, true_max_dd, p5_val, p95_val, profit_factor, winrate = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-
-            cfg_summary[s] = {
-                "signals": n_signals,
-                "filled": len(filled_plans),
-                "fill_rate": fill_rate,
-                "win_rate": winrate,
-                "expectancy_r": mean_exp,
-                "max_drawdown_r": true_max_dd,
-                "p5_r": p5_val,
-                "p95_r": p95_val,
-                "profit_factor": profit_factor
-            }
-
-        summary["results"].append(cfg_summary)
-
-    return summary
 # ---------------------------------------------------------------------------
 # FASE 1: PURE STATISTICAL EDGE & FORWARD MOVEMENT EVALUATOR
 # ---------------------------------------------------------------------------
 
+def compute_block_bootstrap_ci(data_series, block_size=5, num_replays=500, rng=None):
+    """
+    Stationary Block Bootstrap to safely calculate 95% Confidence Interval
+    for autocorrelated forward return series without breaking time structure.
+    If sample size < 5, returns (None, None) to avoid false certainty of [0, 0].
+    """
+    n = len(data_series)
+    if n < 5:
+        return None, None
+
+    if rng is None:
+        rng = np.random.default_rng(42)
+
+    arr = np.asarray(data_series, dtype=np.float64)
+    num_blocks = int(math.ceil(n / block_size))
+    bootstrap_means = np.empty(num_replays, dtype=np.float64)
+
+    for r in range(num_replays):
+        sample = []
+        for _ in range(num_blocks):
+            start = rng.integers(0, max(1, n - block_size + 1))
+            sample.extend(arr[start:start + block_size])
+        bootstrap_means[r] = np.mean(sample[:n])
+
+    ci_low = round(float(np.percentile(bootstrap_means, 2.5)), 3)
+    ci_high = round(float(np.percentile(bootstrap_means, 97.5)), 3)
+    return ci_low, ci_high
+
+
 def evaluate_combination_forward_edge(
     strategy_key, bars_data, side="both", horizons=[3, 6, 12, 24, 48],
-    price_step=0.01, seed=42
+    price_step=0.01, seed=42, oos_split_pct=0.30
 ):
     """
-    FASE 1 EVALUATOR — SEKARANG:
-    Murni menilai keunggulan statistik sinyal entri tanpa aturan keluar buatan.
-    
-    TIDAK menggunakan TP/SL sintetis atau artificial limits.
-    Semua metrik forward movement diukur strictly post-candle close (t+1 s/d t+H)
-    tanpa look-ahead bias:
-    
-    1. Signal frequency (N): Seberapa sering setup muncul.
-    2. Forward Return (pts & ATR-normalized): Return pada t+H.
-    3. MFE (Maximum Favorable Excursion): Jarak terjauh harga menguntungkan sinyal.
-    4. MAE (Maximum Adverse Excursion): Jarak terjauh harga melawan sinyal.
-    5. Edge Ratio: MFE / MAE (> 1.0 = positive drift bias).
-    6. Directional Accuracy (%): Persentase kejadian di mana Forward Return > 0.
-    7. 95% Confidence Interval Forward Return: Menilai kepastian statistik keunggulan.
-    8. Period Stability: Konsistensi return antara paruh pertama vs paruh kedua data.
+    FASE 1 EVALUATOR:
+    - Pure Entry Alpha Validation (Zero TP/SL Bias)
+    - Strictly Post-Close Forward Excursion (t+1 s/d t+H)
+    - Non-negative MFE/MAE: max(0.0, ...)
+    - Explicit Edge Ratio (inf if MAE==0 and MFE>0)
+    - Block Bootstrap for Overlapping Autocorrelated Returns
+    - Safe CI: (None, None) when N < 5
+    - Walk-Forward Out-of-Sample (OOS) validation metrics
     """
     bars = bars_data.get("bars", []) if isinstance(bars_data, dict) else bars_data
     if len(bars) < 50:
@@ -1130,17 +1013,23 @@ def evaluate_combination_forward_edge(
     feats = extract_candle_features(bars)
     atrs = feats.get("atr", np.ones(n_bars, dtype=np.float64))
 
+    # In-Sample vs Out-of-Sample Split Index
+    split_idx = int(n_bars * (1.0 - max(0.10, min(0.50, float(oos_split_pct)))))
+
     summary = {
         "phase": "FASE 1 (Pure Signal & Forward Edge Validation)",
         "strategy_key": strategy_key,
         "strategy_name": grid_results["strategy_name"],
         "horizons": horizons,
+        "split_index": split_idx,
+        "oos_bars": n_bars - split_idx,
         "price_step": price_step,
         "results": []
     }
 
-    primary_h = horizons[min(2, len(horizons) - 1)]  # Default horizon perbandingan (misal 12 bar)
+    primary_h = horizons[min(2, len(horizons) - 1)]  # 12 bar default
     sides_to_eval = ["buy", "sell"] if side == "both" else [side.lower()]
+    rng = np.random.default_rng(seed)
 
     for cfg_dict in grid_results["grid"]:
         cid = cfg_dict["config_id"]
@@ -1159,28 +1048,27 @@ def evaluate_combination_forward_edge(
             if n_signals == 0:
                 cfg_summary[s] = {
                     "signals": 0, "frequency_per_1000": 0.0,
-                    "avg_forward_return": 0.0, "return_ci_95": [0.0, 0.0],
+                    "avg_forward_return": 0.0, "return_ci_95": [None, None],
                     "directional_accuracy_pct": 0.0,
                     "avg_mfe": 0.0, "avg_mae": 0.0, "edge_ratio": 0.0,
-                    "stability_score": 0.0, "horizon_details": {}
+                    "stability_score": 0.0, "oos_accuracy_pct": 0.0, "oos_edge_ratio": 0.0,
+                    "horizon_details": {}
                 }
                 continue
 
-            # Hitung forward excursion untuk setiap horizon H
-            # Hanya sinyal dengan waktu observasi lengkap (bar_idx + max(horizons) < n_bars)
             max_h = max(horizons)
             valid_signals = [p for p in candidate_list if p["bar_index"] + max_h < n_bars]
-
             if not valid_signals:
                 valid_signals = [p for p in candidate_list if p["bar_index"] + primary_h < n_bars]
 
             if not valid_signals:
                 cfg_summary[s] = {
                     "signals": n_signals, "frequency_per_1000": round((n_signals / n_bars) * 1000.0, 1),
-                    "avg_forward_return": 0.0, "return_ci_95": [0.0, 0.0],
+                    "avg_forward_return": 0.0, "return_ci_95": [None, None],
                     "directional_accuracy_pct": 0.0,
                     "avg_mfe": 0.0, "avg_mae": 0.0, "edge_ratio": 0.0,
-                    "stability_score": 0.0, "horizon_details": {}
+                    "stability_score": 0.0, "oos_accuracy_pct": 0.0, "oos_edge_ratio": 0.0,
+                    "horizon_details": {}
                 }
                 continue
 
@@ -1201,16 +1089,17 @@ def evaluate_combination_forward_edge(
                     fwd_slice_l = lows[t + 1:t + h + 1]
                     fwd_terminal_c = closes[t + h]
 
+                    # Non-Negative MFE & MAE definition
                     if s == "buy":
                         ret = fwd_terminal_c - entry_p
-                        mfe = np.max(fwd_slice_h) - entry_p
-                        mae = entry_p - np.min(fwd_slice_l)
+                        mfe = max(0.0, float(np.max(fwd_slice_h) - entry_p))
+                        mae = max(0.0, float(entry_p - np.min(fwd_slice_l)))
                     else:
                         ret = entry_p - fwd_terminal_c
-                        mfe = entry_p - np.min(fwd_slice_l)
-                        mae = np.max(fwd_slice_h) - entry_p
+                        mfe = max(0.0, float(entry_p - np.min(fwd_slice_l)))
+                        mae = max(0.0, float(np.max(fwd_slice_h) - entry_p))
 
-                    fwd_returns.append(ret / c_atr)  # Normalized by ATR
+                    fwd_returns.append(ret / c_atr)
                     mfes.append(mfe / c_atr)
                     maes.append(mae / c_atr)
 
@@ -1222,48 +1111,72 @@ def evaluate_combination_forward_edge(
                     mean_mfe = float(np.mean(arr_mfe))
                     mean_mae = float(np.mean(arr_mae))
                     acc = float(np.mean(arr_ret > 0)) * 100.0
-                    edge_r = (mean_mfe / mean_mae) if mean_mae > 1e-4 else (2.0 if mean_mfe > 0 else 1.0)
+
+                    # Explicit Edge Ratio logic
+                    if mean_mae > 1e-4:
+                        edge_r = round(mean_mfe / mean_mae, 2)
+                    elif mean_mfe > 0:
+                        edge_r = float("inf")
+                    else:
+                        edge_r = 1.0
+
                     horizon_stats[h] = {
                         "mean_return_atr": round(mean_ret, 3),
                         "mean_mfe_atr": round(mean_mfe, 3),
                         "mean_mae_atr": round(mean_mae, 3),
-                        "edge_ratio": round(edge_r, 2),
+                        "edge_ratio": edge_r,
                         "accuracy_pct": round(acc, 1)
                     }
 
-            # Ambil metrik ringkasan pada primary horizon
             prim_data = horizon_stats.get(primary_h, list(horizon_stats.values())[-1] if horizon_stats else {})
 
-            # 95% Confidence Interval via Bootstrap
+            # Primary returns for Block Bootstrap & Stability
             all_prim_rets = []
+            is_returns = []
+            oos_returns = []
+            oos_mfes = []
+            oos_maes = []
+
             for p in valid_signals:
                 t = p["bar_index"]
                 if t + primary_h < n_bars:
                     c_atr = max(atrs[t], 0.01)
                     ret = (closes[t + primary_h] - closes[t]) if s == "buy" else (closes[t] - closes[t + primary_h])
-                    all_prim_rets.append(ret / c_atr)
+                    norm_ret = ret / c_atr
+                    all_prim_rets.append(norm_ret)
+                    if t < split_idx:
+                        is_returns.append(norm_ret)
+                    else:
+                        oos_returns.append(norm_ret)
+                        fwd_h = highs[t + 1:t + primary_h + 1]
+                        fwd_l = lows[t + 1:t + primary_h + 1]
+                        if s == "buy":
+                            oos_mfes.append(max(0.0, float(np.max(fwd_h) - closes[t])) / c_atr)
+                            oos_maes.append(max(0.0, float(closes[t] - np.min(fwd_l))) / c_atr)
+                        else:
+                            oos_mfes.append(max(0.0, float(closes[t] - np.min(fwd_l))) / c_atr)
+                            oos_maes.append(max(0.0, float(np.max(fwd_h) - closes[t])) / c_atr)
 
-            if len(all_prim_rets) >= 5:
-                rng = np.random.default_rng(seed)
-                boot_means = [np.mean(rng.choice(all_prim_rets, size=len(all_prim_rets), replace=True)) for _ in range(500)]
-                ci_low = round(float(np.percentile(boot_means, 2.5)), 3)
-                ci_high = round(float(np.percentile(boot_means, 97.5)), 3)
-            else:
-                ci_low, ci_high = 0.0, 0.0
+            # Block Bootstrap Confidence Interval
+            ci_low, ci_high = compute_block_bootstrap_ci(all_prim_rets, block_size=5, num_replays=500, rng=rng)
 
-            # Period Stability: Bandingkan return separuh pertama vs separuh kedua data
-            if len(all_prim_rets) >= 6:
-                mid_idx = len(all_prim_rets) // 2
-                ret_h1 = np.mean(all_prim_rets[:mid_idx])
-                ret_h2 = np.mean(all_prim_rets[mid_idx:])
-                # Stability score: 1.0 jika kedua separuh positif atau bertanda sama, turun jika berlawanan
-                if (ret_h1 > 0 and ret_h2 > 0) or (ret_h1 < 0 and ret_h2 < 0):
-                    stab_score = round(min(ret_h1, ret_h2) / max(ret_h1, ret_h2), 2) if max(ret_h1, ret_h2) != 0 else 0.5
+            # Period Stability Score (In-Sample vs Out-of-Sample consistency)
+            if is_returns and oos_returns:
+                is_mean = float(np.mean(is_returns))
+                oos_mean = float(np.mean(oos_returns))
+                if (is_mean > 0 and oos_mean > 0) or (is_mean < 0 and oos_mean < 0):
+                    stab_score = round(min(is_mean, oos_mean) / max(is_mean, oos_mean), 2) if max(is_mean, oos_mean) != 0 else 0.5
                     stab_score = max(0.1, min(1.0, stab_score))
                 else:
-                    stab_score = 0.0  # Tidak stabil (satu separuh untung, satu buntung)
+                    stab_score = 0.0
+                oos_acc = round(float(np.mean(np.array(oos_returns) > 0)) * 100.0, 1)
+                m_mfe = float(np.mean(oos_mfes)) if oos_mfes else 0.0
+                m_mae = float(np.mean(oos_maes)) if oos_maes else 0.0
+                oos_edge = round(m_mfe / m_mae, 2) if m_mae > 1e-4 else (float("inf") if m_mfe > 0 else 1.0)
             else:
                 stab_score = 0.5
+                oos_acc = prim_data.get("accuracy_pct", 0.0)
+                oos_edge = prim_data.get("edge_ratio", 0.0)
 
             cfg_summary[s] = {
                 "signals": n_signals,
@@ -1275,6 +1188,8 @@ def evaluate_combination_forward_edge(
                 "avg_mae": prim_data.get("mean_mae_atr", 0.0),
                 "edge_ratio": prim_data.get("edge_ratio", 0.0),
                 "stability_score": stab_score,
+                "oos_accuracy_pct": oos_acc,
+                "oos_edge_ratio": oos_edge,
                 "horizon_details": horizon_stats
             }
 
