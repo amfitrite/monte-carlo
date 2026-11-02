@@ -1,0 +1,284 @@
+//@version=6
+indicator("Monte Carlo Matrix & Probability Bands [v6]", overlay = true, max_polylines_count = 100, max_lines_count = 100, max_labels_count = 100)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// 1. Inputs & Configuration
+//---------------------------------------------------------------------------------------------------------------------{
+
+// --- Execution & Refresh Timing ---
+grp_exec      = "Execution & Refresh Control"
+throttle_sec  = input.int(15, title = "Live Update Interval (Seconds)", minval = 1, maxval = 300, tooltip = "Auto-hitung di bar live tiap N detik agar stabil dan bebas lag.", group = grp_exec)
+replay_mode   = input.bool(true, title = "Support Bar Replay", tooltip = "Update otomatis setiap bar baru maju di mode Bar Replay.", group = grp_exec)
+
+// --- Monte Carlo Matrix & Permutations ---
+grp_mc        = "Monte Carlo Permutation Engine"
+lookback_bars = input.int(100, title = "Historical Lookback (Pool Size)", minval = 20, maxval = 499, tooltip = "Total pool candle masa lalu yang dijadikan bahan pergerakan.", group = grp_mc)
+num_replays   = input.int(100, title = "Replay Runs (Iterations)", minval = 10, maxval = 200, tooltip = "Jumlah lintasan simulasi Monte Carlo yang dijalankan.", group = grp_mc)
+kombinasi_len = input.int(20, title = "Kombinasi Subsample (Window Size)", minval = 5, maxval = 100, tooltip = "Jumlah sampel acak yang ditarik untuk membangun 1 lintasan kombinasi.", group = grp_mc)
+var_method    = input.string("Subsample Kombinasi", title = "Variation Method", options = ["Subsample Kombinasi", "Block Permutation", "Sign-Flipping Drift", "Uniform Shuffle"], tooltip = "Metode variasi sampling data historis.", group = grp_mc)
+
+// --- Visual Probability Bands ---
+grp_vis       = "Probability Bands Visuals"
+show_shadow   = input.bool(true, title = "Show Min/Max Shadow Band", group = grp_vis)
+shadow_col    = input.color(color.new(#787b86, 85), title = "Shadow Band Fill", group = grp_vis)
+
+show_stdev    = input.bool(true, title = "Show StdDev Bands", group = grp_vis)
+stdev_multi   = input.float(1.5, title = "StdDev Multiplier", minval = 0.1, step = 0.5, group = grp_vis)
+stdev_col     = input.color(color.new(#2962ff, 80), title = "StdDev Band Fill", group = grp_vis)
+
+show_mean     = input.bool(true, title = "Show Center Mean Path", group = grp_vis)
+mean_col      = input.color(#2962ff, title = "Mean Path Color", group = grp_vis)
+
+// --- Entry Strategy Templates ---
+grp_strat     = "Entry Strategy Templates"
+enable_entry  = input.bool(true, title = "Enable Entry Signals", group = grp_strat)
+strat_type    = input.string(
+     "Mean Reversion: Touch / Fade", 
+     title = "Strategy Template", 
+     options = [
+         "Mean Reversion: Touch / Fade", 
+         "Mean Reversion: Re-entry Confirmation", 
+         "Volatility Breakout: Momentum Expansion", 
+         "Mean Path Pullback: Trend Retest", 
+         "Asymmetric Skew: Quantitative Probability Bias"
+     ], 
+     tooltip = "Pilih pola interaksi harga terhadap pita Monte Carlo.", 
+     group = grp_strat
+ )
+prob_skew_pct = input.int(65, title = "Skew Threshold % (for Asymmetric Skew)", minval = 50, maxval = 90, step = 5, group = grp_strat)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// 2. Custom Types & Data Buffers
+//---------------------------------------------------------------------------------------------------------------------{
+type fa
+    array<float> ary
+
+var array<float> can_ary = array.new_float(0)
+
+// Visual element state handles
+var polyline shadow_poly = na
+var polyline stdev_poly  = na
+var polyline mean_poly   = na
+
+// Timing state
+var int last_calc_time = 0
+
+// Populate movement buffer (close - open)
+movement = close - open
+array.push(can_ary, movement)
+if array.size(can_ary) > lookback_bars
+    array.shift(can_ary)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// 3. Engine Functions (Preserving Core Pseudo-Random Algorithmic Design)
+//---------------------------------------------------------------------------------------------------------------------{
+is_odd(int _num) => 
+    (_num / 2.0) - math.floor(_num / 2.0) > 0
+
+// Generator LCG sesuai algoritma asli Anda
+random_in_range(int seed, int min_val, int max_val) => 
+    min_val + (((1103515245 * seed + 12345) % 2147483647) % ((max_val + 1) - min_val))
+
+// Generator kombinasi & variasi Monte Carlo
+build_mc_permutation(array<float> pool, int k_len, string mode, int seed_val) =>
+    array<float> sample_out = array.new_float(0)
+    int pool_size = array.size(pool)
+    
+    if pool_size > 0
+        if mode == "Subsample Kombinasi"
+            // Mengambil kombinasi subset acak sebanyak k_len dari pool
+            for step = 0 to k_len - 1
+                int r_idx = random_in_range(seed_val + step * 17, 0, pool_size - 1)
+                array.push(sample_out, array.get(pool, r_idx))
+                
+        else if mode == "Block Permutation"
+            // Menjaga korelasi mikro dengan mengambil blok-blok pergerakan (2 bar berurutan)
+            int num_blocks = math.ceil(k_len / 2.0)
+            for b = 0 to num_blocks - 1
+                int start_idx = random_in_range(seed_val + b * 29, 0, pool_size - 2)
+                array.push(sample_out, array.get(pool, start_idx))
+                if array.size(sample_out) < k_len
+                    array.push(sample_out, array.get(pool, start_idx + 1))
+                    
+        else if mode == "Sign-Flipping Drift"
+            // Variasi arah (kombinasi pergerakan dengan pembalikan probabilitas arah acak)
+            for step = 0 to k_len - 1
+                int r_idx = random_in_range(seed_val + step * 23, 0, pool_size - 1)
+                float val = array.get(pool, r_idx)
+                bool flip = random_in_range(seed_val + step * 71, 0, 1) == 1
+                array.push(sample_out, flip ? -val : val)
+                
+        else // Uniform Shuffle
+            array<float> temp_copy = array.copy(pool)
+            for step = 0 to math.min(k_len, pool_size) - 1
+                int r_idx = random_in_range(seed_val + step * 13, 0, array.size(temp_copy) - 1)
+                array.push(sample_out, array.get(temp_copy, r_idx))
+                array.remove(temp_copy, r_idx)
+                
+    sample_out
+
+//---------------------------------------------------------------------------------------------------------------------}
+// 4. Execution Dispatcher (Throttle & Replay Logic)
+//---------------------------------------------------------------------------------------------------------------------{
+bool time_trigger = (timenow - last_calc_time) >= (throttle_sec * 1000)
+bool should_calc  = false
+
+if barstate.islast
+    if time_trigger or last_calc_time == 0
+        should_calc := true
+        last_calc_time := timenow
+else if replay_mode and barstate.isnew
+    should_calc := true
+
+//---------------------------------------------------------------------------------------------------------------------}
+// 5. Simulation Execution & Matrix Processing
+//---------------------------------------------------------------------------------------------------------------------{
+var float ref_u_band   = na
+var float ref_l_band   = na
+var float ref_m_band   = na
+var float bullish_prob = 50.0
+
+if should_calc and array.size(can_ary) >= 10
+    int horizon_len = math.min(kombinasi_len, array.size(can_ary))
+    all_runs = array.new<fa>(0)
+    int up_count = 0
+    
+    // 1. Eksekusi N Replays dengan Kombinasi Variasi
+    for run = 1 to num_replays
+        int run_seed = (bar_index * 1337 + run * 79 + (timenow % 99991))
+        array<float> path_samples = build_mc_permutation(can_ary, horizon_len, var_method, run_seed)
+        
+        array<float> single_run_path = array.new_float(0)
+        float cur_p = close
+        
+        for step = 0 to array.size(path_samples) - 1
+            cur_p += array.get(path_samples, step)
+            array.push(single_run_path, cur_p)
+            
+        if array.size(single_run_path) > 0 and array.last(single_run_path) > close
+            up_count += 1
+            
+        array.push(all_runs, fa.new(single_run_path))
+
+    // Probabilitas asimetri arah akhir simulasi
+    bullish_prob := (up_count / float(num_replays)) * 100.0
+
+    // 2. Transposisi Data Menjadi Slice Vertikal
+    all_vertical = array.new<fa>(0)
+    for step = 0 to horizon_len - 1
+        vert_slice = array.new_float(0)
+        for r = 0 to num_replays - 1
+            fa r_obj = array.get(all_runs, r)
+            array.push(vert_slice, array.get(r_obj.ary, step))
+        array.push(all_vertical, fa.new(vert_slice))
+
+    // 3. Ekstraksi Profil Pita (Bands Coordinates)
+    array<chart.point> outer_top = array.new<chart.point>(0)
+    array<chart.point> outer_bot = array.new<chart.point>(0)
+    array<chart.point> dev_top   = array.new<chart.point>(0)
+    array<chart.point> dev_bot   = array.new<chart.point>(0)
+    array<chart.point> mean_pts  = array.new<chart.point>(0)
+
+    chart.point origin_pt = chart.point.from_index(bar_index, close)
+    array.push(mean_pts, origin_pt)
+
+    for step = 0 to horizon_len - 1
+        fa v_data = array.get(all_vertical, step)
+        array<float> v_ary = v_data.ary
+        
+        float v_mean  = array.avg(v_ary)
+        float v_max   = array.max(v_ary)
+        float v_min   = array.min(v_ary)
+        float v_stdev = array.stdev(v_ary)
+        
+        int target_x = bar_index + step + 1
+        
+        // Simpan titik proksimal untuk trigger entry
+        if step == 0
+            ref_m_band := v_mean
+            ref_u_band := v_mean + (v_stdev * stdev_multi)
+            ref_l_band := v_mean - (v_stdev * stdev_multi)
+            
+        float u_dev = v_mean + (v_stdev * stdev_multi)
+        float l_dev = v_mean - (v_stdev * stdev_multi)
+        
+        array.push(outer_top, chart.point.from_index(target_x, v_max))
+        array.unshift(outer_bot, chart.point.from_index(target_x, v_min))
+        
+        array.push(dev_top, chart.point.from_index(target_x, u_dev))
+        array.unshift(dev_bot, chart.point.from_index(target_x, l_dev))
+        
+        array.push(mean_pts, chart.point.from_index(target_x, v_mean))
+
+    // 4. Konstruksi Poligon Pita Tertutup
+    array<chart.point> shadow_poly_pts = array.new<chart.point>(0)
+    array.push(shadow_poly_pts, origin_pt)
+    for p in outer_top
+        array.push(shadow_poly_pts, p)
+    for p in outer_bot
+        array.push(shadow_poly_pts, p)
+
+    array<chart.point> dev_poly_pts = array.new<chart.point>(0)
+    array.push(dev_poly_pts, origin_pt)
+    for p in dev_top
+        array.push(dev_poly_pts, p)
+    for p in dev_bot
+        array.push(dev_poly_pts, p)
+
+    // 5. Render Polyline Pita (Pita Praktis Bersih)
+    if not na(shadow_poly)
+        polyline.delete(shadow_poly)
+    if not na(stdev_poly)
+        polyline.delete(stdev_poly)
+    if not na(mean_poly)
+        polyline.delete(mean_poly)
+
+    if show_shadow
+        shadow_poly := polyline.new(shadow_poly_pts, line_color = color.new(shadow_col, 100), fill_color = shadow_col)
+    if show_stdev
+        stdev_poly  := polyline.new(dev_poly_pts, line_color = color.new(stdev_col, 90), fill_color = stdev_col)
+    if show_mean
+        mean_poly   := polyline.new(mean_pts, line_color = mean_col)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// 6. Strategy Entry Templates Evaluator
+//---------------------------------------------------------------------------------------------------------------------{
+bool buy_sig  = false
+bool sell_sig = false
+
+if enable_entry and not na(ref_u_band) and not na(ref_l_band) and not na(ref_m_band)
+    
+    // Template 1: Mean Reversion (Touch / Fade)
+    if strat_type == "Mean Reversion: Touch / Fade"
+        buy_sig  := low <= ref_l_band and close > ref_l_band
+        sell_sig := high >= ref_u_band and close < ref_u_band
+
+    // Template 2: Mean Reversion (Re-entry Confirmation)
+    else if strat_type == "Mean Reversion: Re-entry Confirmation"
+        buy_sig  := close[1] < ref_l_band and close > ref_l_band
+        sell_sig := close[1] > ref_u_band and close < ref_u_band
+
+    // Template 3: Volatility Breakout (Momentum Expansion)
+    else if strat_type == "Volatility Breakout: Momentum Expansion"
+        buy_sig  := ta.crossover(close, ref_u_band)
+        sell_sig := ta.crossunder(close, ref_l_band)
+
+    // Template 4: Mean Path Pullback (Trend Retest)
+    else if strat_type == "Mean Path Pullback: Trend Retest"
+        bool slope_up = ref_m_band > close[1]
+        bool slope_dn = ref_m_band < close[1]
+        buy_sig  := slope_up and ta.crossover(close, ref_m_band)
+        sell_sig := slope_dn and ta.crossunder(close, ref_m_band)
+
+    // Template 5: Asymmetric Quantitative Skew Bias
+    else if strat_type == "Asymmetric Skew: Quantitative Probability Bias"
+        buy_sig  := bullish_prob >= prob_skew_pct and ta.crossover(close, open)
+        sell_sig := (100.0 - bullish_prob) >= prob_skew_pct and ta.crossunder(close, open)
+
+// Plot Sinyal Entry
+plotshape(buy_sig, title = "MC Buy Signal", style = shape.triangleup, location = location.belowbar, color = #00e676, size = size.small, text = "BUY")
+plotshape(sell_sig, title = "MC Sell Signal", style = shape.triangledown, location = location.abovebar, color = #ff5252, size = size.small, text = "SELL")
+
+// Alert Resmi
+alertcondition(buy_sig, title = "Monte Carlo BUY Signal", message = "Monte Carlo Matrix Entry: BUY on {{ticker}} at {{close}}")
+alertcondition(sell_sig, title = "Monte Carlo SELL Signal", message = "Monte Carlo Matrix Entry: SELL on {{ticker}} at {{close}}")

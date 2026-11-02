@@ -114,6 +114,8 @@ class TimeMachineProGUI:
         self.dual_results = None
         self.mt5_positions = []
         self._auto_scan_debounce_timer = None
+        self._auto_refresh_job = None
+        self._is_scanning = False
 
         # Chart Interactive Zoom & Pan states
         self.zoom_y = 1.0
@@ -134,9 +136,8 @@ class TimeMachineProGUI:
         # Configure taskbar integration for frameless window
         self._setup_taskbar()
 
-        # Build UI
-        self._build_title_bar()
-        self._build_header_toolbar()
+        # Build UI - Unified Chrome-style Header & Body
+        self._build_chrome_toolbar()
         self._build_main_body()
 
         # Load saved settings if any
@@ -170,32 +171,159 @@ class TimeMachineProGUI:
         except Exception:
             pass
 
-    # ========================== CUSTOM TITLE BAR ==========================
-    def _build_title_bar(self):
-        self.title_bar = tk.Frame(self.root, bg="#0d1117", height=34, highlightbackground=BORDER_COL, highlightthickness=1)
-        self.title_bar.pack(fill=tk.X, side=tk.TOP)
-        self.title_bar.pack_propagate(False)
+    # ========================== CHROME-STYLE INTEGRATED TOOLBAR ==========================
+    def _build_chrome_toolbar(self):
+        # Master single-row bar: height 44px, seamlessly merges window controls, tabs, parameter selectors, and actions
+        self.top_bar = tk.Frame(self.root, bg="#0d1117", height=44, highlightbackground=BORDER_COL, highlightthickness=1)
+        self.top_bar.pack(fill=tk.X, side=tk.TOP)
+        self.top_bar.pack_propagate(False)
 
-        # App Brand & Icon
-        brand_frame = tk.Frame(self.title_bar, bg="#0d1117")
-        brand_frame.pack(side=tk.LEFT, padx=10)
+        # Brand / App Icon & Chrome-style Tabs on Left
+        left_box = tk.Frame(self.top_bar, bg="#0d1117")
+        left_box.pack(side=tk.LEFT, fill=tk.Y, padx=(8, 4))
 
-        tk.Label(brand_frame, text="⚡", font=("Segoe UI", 11), fg=GOLD, bg="#0d1117").pack(side=tk.LEFT, padx=(0, 4))
-        title_lbl = tk.Label(
-            brand_frame, text="XAUUSD TIME MACHINE PRO", font=("Segoe UI", 9, "bold"),
-            fg=TEXT_PRIMARY, bg="#0d1117"
+        tk.Label(left_box, text="⚡", font=("Segoe UI", 12), fg=GOLD, bg="#0d1117").pack(side=tk.LEFT, padx=(2, 6))
+
+        # Tabs container (styled like browser active/inactive tabs)
+        tabs_box = tk.Frame(left_box, bg="#0d1117")
+        tabs_box.pack(side=tk.LEFT, fill=tk.Y, pady=5)
+
+        self.btn_mode_auto = tk.Button(
+            tabs_box, text="⧉ Dual Auto", font=("Segoe UI", 9, "bold"),
+            bg=GOLD, fg="#0b0f17", relief=tk.FLAT, cursor="hand2", padx=10, pady=2,
+            highlightthickness=0, bd=0,
+            command=lambda: self._set_app_mode("auto")
         )
-        title_lbl.pack(side=tk.LEFT)
+        self.btn_mode_auto.pack(side=tk.LEFT, padx=(0, 2), fill=tk.Y)
 
-        sub_lbl = tk.Label(
-            brand_frame, text="— Monte Carlo Quant Odds Engine", font=("Segoe UI", 8),
-            fg=TEXT_MUTED, bg="#0d1117"
+        self.btn_mode_manual = tk.Button(
+            tabs_box, text="📊 Manual", font=("Segoe UI", 9, "bold"),
+            bg=INPUT_BG, fg=TEXT_MUTED, relief=tk.FLAT, cursor="hand2", padx=10, pady=2,
+            highlightthickness=0, bd=0,
+            command=lambda: self._set_app_mode("manual")
         )
-        sub_lbl.pack(side=tk.LEFT, padx=6)
+        self.btn_mode_manual.pack(side=tk.LEFT, padx=(2, 6), fill=tk.Y)
 
-        # Window Action Buttons on Right
-        btn_box = tk.Frame(self.title_bar, bg="#0d1117")
-        btn_box.pack(side=tk.RIGHT)
+        # Center Parameter Quick Controls (In-line toolbar)
+        center_box = tk.Frame(self.top_bar, bg="#0d1117")
+        center_box.pack(side=tk.LEFT, fill=tk.Y, padx=4)
+
+        # Timeframe toggle (M1 / M5)
+        tf_box = tk.Frame(center_box, bg=CARD_BG, padx=2, pady=2, highlightbackground=BORDER_COL, highlightthickness=1)
+        tf_box.pack(side=tk.LEFT, pady=6, padx=(0, 6))
+
+        self.btn_tf_m5 = tk.Button(
+            tf_box, text="M5", font=("Segoe UI", 8, "bold"),
+            bg=GOLD, fg="#0b0f17", relief=tk.FLAT, cursor="hand2", padx=7, pady=1,
+            highlightthickness=0, bd=0,
+            command=lambda: self._set_timeframe("M5")
+        )
+        self.btn_tf_m5.pack(side=tk.LEFT)
+
+        self.btn_tf_m1 = tk.Button(
+            tf_box, text="M1", font=("Segoe UI", 8, "bold"),
+            bg=INPUT_BG, fg=TEXT_MUTED, relief=tk.FLAT, cursor="hand2", padx=7, pady=1,
+            highlightthickness=0, bd=0,
+            command=lambda: self._set_timeframe("M1")
+        )
+        self.btn_tf_m1.pack(side=tk.LEFT)
+
+        # Strategy Combobox
+        self.strategy_var = tk.StringVar(value="ATR Pullback & Swing (Default)")
+        self.strategy_combo = ttk.Combobox(
+            center_box, textvariable=self.strategy_var,
+            values=[
+                "ATR Pullback & Swing (Default)",
+                "Breakout + POC Retest",
+                "Liquidity Sweep + FVG",
+                "Session ORB (Asia/London/NY)",
+                "Bollinger Extremes (Z-Score)",
+                "Accumulation + Inverse FVG (IFVG)",
+                "Liquidity Sweep + Shift Structure (SMS)",
+                "Liquidity Absorption + Volume Bubbles",
+                "Order Flow Footprint Proxy"
+            ],
+            state="readonly", font=("Segoe UI", 8), width=23
+        )
+        self.strategy_combo.pack(side=tk.LEFT, pady=8, padx=(0, 6))
+        self.strategy_combo.bind("<<ComboboxSelected>>", lambda e: self._on_strategy_change())
+
+        # Candidate Grid Combobox
+        self.candidate_grid_var = tk.StringVar(value="0 (Versi Asli / Baseline)")
+        self.candidate_grid_combo = ttk.Combobox(
+            center_box, textvariable=self.candidate_grid_var,
+            values=[
+                "0 (Versi Asli / Baseline)",
+                "5 Variasi (Cepat)",
+                "10 Variasi (Seimbang)",
+                "20 Variasi (Optimal Brute-Force)"
+            ],
+            state="readonly", font=("Segoe UI", 8), width=16
+        )
+        self.candidate_grid_combo.pack(side=tk.LEFT, pady=8, padx=(0, 6))
+        self.candidate_grid_combo.bind("<<ComboboxSelected>>", lambda e: self.execute_auto_scan() if self.active_mode == "auto" else None)
+
+        # Replays Combobox
+        self.replays_var = tk.StringVar(value="5,000")
+        self.replays_combo = ttk.Combobox(
+            center_box, textvariable=self.replays_var,
+            values=["100", "250", "500", "1,000", "3,000", "5,000", "10,000"],
+            state="readonly", font=("Segoe UI", 8), width=7
+        )
+        self.replays_combo.pack(side=tk.LEFT, pady=8, padx=(0, 8))
+
+        # Main Scan / Run Action Button in Toolbar
+        self.btn_run_auto = tk.Button(
+            center_box, text="⚡ SCAN DUAL", font=("Segoe UI", 9, "bold"),
+            bg=GOLD, fg="#0b0f17", activebackground=GOLD_HOVER, activeforeground="#ffffff",
+            relief=tk.FLAT, cursor="hand2", padx=10, pady=2,
+            highlightthickness=0, bd=0,
+            command=self.execute_auto_scan
+        )
+        self.btn_run_auto.pack(side=tk.LEFT, pady=6, padx=(0, 2))
+
+        self.btn_run_manual = tk.Button(
+            center_box, text="🚀 RUN SIM", font=("Segoe UI", 9, "bold"),
+            bg=GOLD, fg="#0b0f17", activebackground=GOLD_HOVER, activeforeground="#ffffff",
+            relief=tk.FLAT, cursor="hand2", padx=10, pady=2,
+            highlightthickness=0, bd=0,
+            command=self.execute_manual_simulation
+        )
+
+        # Aligned Tools / Actions Icons (In-line with menus):
+        # ⚙ Settings modal, 📋 Copy setups to clipboard, 📥 MT5 active positions
+        tools_box = tk.Frame(self.top_bar, bg="#0d1117")
+        tools_box.pack(side=tk.LEFT, fill=tk.Y, padx=(4, 6))
+
+        def make_tool_icon(text, tooltip_text, cmd, col=GOLD):
+            b = tk.Label(tools_box, text=text, font=("Segoe UI", 11), fg=col, bg="#0d1117", width=3, cursor="hand2")
+            b.pack(side=tk.LEFT, fill=tk.Y, pady=2)
+            b.bind("<Button-1>", lambda e: cmd())
+            b.bind("<Enter>", lambda e: b.configure(bg=CARD_BG))
+            b.bind("<Leave>", lambda e: b.configure(bg="#0d1117"))
+            return b
+
+        self.btn_gear_settings = make_tool_icon("⚙", "Global Settings", self._open_settings_modal)
+        self.btn_copy_signals = make_tool_icon("📋", "Copy Setup Signals", self._copy_signals_to_clipboard)
+        self.import_mt5_btn = make_tool_icon("📥", "Impor Posisi MT5", self._open_positions_selector, col=CYAN)
+
+        # Auto Refresh Interval Dropdown (Off, 5s, 10s, 15s (Default), 30s, 60s)
+        self.auto_refresh_var = tk.StringVar(value="15s")
+        self.auto_refresh_combo = ttk.Combobox(
+            tools_box, textvariable=self.auto_refresh_var,
+            values=["Off", "5s", "10s", "15s", "30s", "60s"],
+            state="readonly", font=("Segoe UI", 8), width=5
+        )
+        self.auto_refresh_combo.pack(side=tk.LEFT, padx=(4, 2), pady=8)
+        self.auto_refresh_combo.bind("<<ComboboxSelected>>", lambda e: self._on_auto_refresh_change())
+
+        # Right Area: Window controls (—, ▢, ✕) & Price Pill
+        right_box = tk.Frame(self.top_bar, bg="#0d1117")
+        right_box.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Window Action Buttons (Frameless window controllers)
+        btn_box = tk.Frame(right_box, bg="#0d1117")
+        btn_box.pack(side=tk.RIGHT, fill=tk.Y)
 
         def make_wbtn(text, cmd, hover_bg=CARD_BG, hover_fg=TEXT_PRIMARY):
             b = tk.Label(btn_box, text=text, font=("Segoe UI", 9), fg=TEXT_MUTED, bg="#0d1117", width=4, cursor="hand2")
@@ -209,8 +337,29 @@ class TimeMachineProGUI:
         make_wbtn("▢", self._toggle_maximize)
         make_wbtn("✕", self._close_window, hover_bg="#dc2626", hover_fg="#ffffff")
 
-        # Bind dragging to title bar and brand label
-        for w in (self.title_bar, brand_frame, title_lbl, sub_lbl):
+        # Market Price Badge & Quick Sync Pill
+        market_pill = tk.Frame(right_box, bg=CARD_BG, padx=8, pady=2, highlightbackground=BORDER_COL, highlightthickness=1)
+        market_pill.pack(side=tk.RIGHT, pady=6, padx=(4, 8))
+
+        self.price_badge = tk.Label(
+            market_pill, text="Syncing Market...", font=("Segoe UI", 8, "bold"),
+            fg=TEXT_PRIMARY, bg=CARD_BG
+        )
+        self.price_badge.pack(side=tk.LEFT, padx=(0, 4))
+
+        tk.Button(
+            market_pill, text="🔄", font=("Segoe UI", 8, "bold"),
+            bg=INPUT_BG, fg=GOLD, relief=tk.FLAT, cursor="hand2", padx=4, pady=1,
+            highlightthickness=0, bd=0,
+            command=self.refresh_data
+        ).pack(side=tk.LEFT)
+
+        # Middle Draggable Spacer Frame: fills any gap between toolbar items and right controls
+        drag_spacer = tk.Frame(self.top_bar, bg="#0d1117", cursor="fleur")
+        drag_spacer.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Bind window dragging to top bar, spacer, and labels
+        for w in (self.top_bar, left_box, tabs_box, drag_spacer):
             w.bind("<ButtonPress-1>", self._start_drag)
             w.bind("<B1-Motion>", self._do_drag)
 
@@ -244,359 +393,35 @@ class TimeMachineProGUI:
             self.is_maximized = False
 
     def _close_window(self):
+        if getattr(self, "_auto_refresh_job", None):
+            try:
+                self.root.after_cancel(self._auto_refresh_job)
+            except Exception:
+                pass
+            self._auto_refresh_job = None
         self._save_settings()
         self.root.destroy()
 
-    # ========================== HEADER TOOLBAR ==========================
-    def _build_header_toolbar(self):
-        toolbar = tk.Frame(self.root, bg=PANEL_BG, height=52, padx=16, pady=8)
-        toolbar.pack(fill=tk.X, side=tk.TOP)
-
-        # Left: App Mode Switcher (Auto Analyzer vs Manual Setup)
-        mode_box = tk.Frame(toolbar, bg=CARD_BG, padx=3, pady=3, highlightbackground=BORDER_COL, highlightthickness=1)
-        mode_box.pack(side=tk.LEFT)
-
-        self.btn_mode_auto = tk.Button(
-            mode_box, text="🤖 DUAL AUTO-ANALYZER", font=("Segoe UI", 9, "bold"),
-            bg=GOLD, fg="#0b0f17", relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", padx=12, pady=4,
-            command=lambda: self._set_app_mode("auto")
-        )
-        self.btn_mode_auto.pack(side=tk.LEFT, padx=(0, 2))
-
-        self.btn_mode_manual = tk.Button(
-            mode_box, text="🛠️ MANUAL SETUP", font=("Segoe UI", 9, "bold"),
-            bg=INPUT_BG, fg=TEXT_MUTED, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", padx=12, pady=4,
-            command=lambda: self._set_app_mode("manual")
-        )
-        self.btn_mode_manual.pack(side=tk.LEFT, padx=(2, 0))
-
-        # Center-Right: Data Source Switcher (MT5 vs COMEX)
-        src_box = tk.Frame(toolbar, bg=CARD_BG, padx=3, pady=3, highlightbackground=BORDER_COL, highlightthickness=1)
-        src_box.pack(side=tk.LEFT, padx=(20, 0))
-
-        self.btn_src_mt5 = tk.Button(
-            src_box, text="🔗 MetaTrader 5", font=("Segoe UI", 8, "bold"),
-            bg=GOLD, fg="#0b0f17", relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", padx=8, pady=3,
-            command=lambda: self._switch_data_source("mt5")
-        )
-        self.btn_src_mt5.pack(side=tk.LEFT, padx=(0, 2))
-
-        self.btn_src_comex = tk.Button(
-            src_box, text="🌐 COMEX Gold", font=("Segoe UI", 8, "bold"),
-            bg=INPUT_BG, fg=TEXT_MUTED, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", padx=8, pady=3,
-            command=lambda: self._switch_data_source("comex")
-        )
-        self.btn_src_comex.pack(side=tk.LEFT, padx=(2, 0))
-
-        # Right: Live Price & Sync Status
-        market_pill = tk.Frame(toolbar, bg=CARD_BG, padx=10, pady=4, highlightbackground=BORDER_COL, highlightthickness=1)
-        market_pill.pack(side=tk.RIGHT)
-
-        self.price_badge = tk.Label(
-            market_pill, text="Syncing Market...", font=("Segoe UI", 9, "bold"),
-            fg=TEXT_PRIMARY, bg=CARD_BG
-        )
-        self.price_badge.pack(side=tk.LEFT, padx=(0, 8))
-
-        tk.Button(
-            market_pill, text="🔄 Sync", font=("Segoe UI", 8, "bold"),
-            bg=INPUT_BG, fg=GOLD, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", padx=6, pady=2,
-            command=self.refresh_data
-        ).pack(side=tk.LEFT)
-
     # ========================== MAIN BODY ==========================
     def _build_main_body(self):
-        self.body_frame = tk.Frame(self.root, bg=DARK_BG, padx=14, pady=12)
+        # Full-window body frame without bulky 340px sidebar
+        self.body_frame = tk.Frame(self.root, bg=DARK_BG, padx=8, pady=8)
         self.body_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Left Control Sidebar (Width ~340px) with smooth scrolling & docked action footer
-        self.left_panel = tk.Frame(self.body_frame, bg=PANEL_BG, width=340, highlightbackground=BORDER_COL, highlightthickness=1)
-        self.left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 12))
-        self.left_panel.pack_propagate(False)
-
-        # Docked Action Footer (Always visible regardless of sidebar scrolling)
-        self.sidebar_footer = tk.Frame(self.left_panel, bg=PANEL_BG, padx=12, pady=10, highlightbackground=BORDER_COL, highlightthickness=1)
-        self.sidebar_footer.pack(side=tk.BOTTOM, fill=tk.X)
-
-        # Auto Mode Docked Action Bar
-        self.auto_action_bar = tk.Frame(self.sidebar_footer, bg=PANEL_BG)
-        self.btn_run_auto = tk.Button(
-            self.auto_action_bar, text="⚡ SCAN DUAL SETUPS", font=("Segoe UI", 11, "bold"),
-            bg=GOLD, fg="#0b0f17", activebackground=GOLD_HOVER, activeforeground="#ffffff",
-            relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", pady=8,
-            command=self.execute_auto_scan
-        )
-        self.btn_run_auto.pack(fill=tk.X, pady=(0, 6))
-
-        self.import_mt5_btn = tk.Button(
-            self.auto_action_bar, text="📥 Impor Posisi Aktif MT5", font=("Segoe UI", 9, "bold"),
-            bg=INPUT_BG, fg=CYAN, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", pady=4,
-            command=self._open_positions_selector
-        )
-        self.import_mt5_btn.pack(fill=tk.X)
-        self.auto_action_bar.pack(fill=tk.X)
-
-        # Manual Mode Docked Action Bar
-        self.manual_action_bar = tk.Frame(self.sidebar_footer, bg=PANEL_BG)
-        self.btn_run_manual = tk.Button(
-            self.manual_action_bar, text="🚀 RUN SIMULATION", font=("Segoe UI", 11, "bold"),
-            bg=GOLD, fg="#0b0f17", activebackground=GOLD_HOVER, activeforeground="#ffffff",
-            relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2", pady=8,
-            command=self.execute_manual_simulation
-        )
-        self.btn_run_manual.pack(fill=tk.X)
-
-        # Scrollable container for control forms
-        self._scroll_container = tk.Frame(self.left_panel, bg=PANEL_BG)
-        self._scroll_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-
-        # Scrollbar packed first on right to ensure visibility
-        self._sidebar_scrollbar = ttk.Scrollbar(self._scroll_container, orient="vertical")
-        self._sidebar_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        self._sidebar_canvas = tk.Canvas(self._scroll_container, bg=PANEL_BG, highlightthickness=0, bd=0, yscrollcommand=self._sidebar_scrollbar.set)
-        self._sidebar_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self._sidebar_scrollbar.configure(command=self._sidebar_canvas.yview)
-
-        self._sidebar_content = tk.Frame(self._sidebar_canvas, bg=PANEL_BG, padx=12, pady=10)
-        self._sidebar_window = self._sidebar_canvas.create_window((0, 0), window=self._sidebar_content, anchor="nw")
-
-        def _on_sidebar_content_config(event):
-            self._sidebar_canvas.configure(scrollregion=self._sidebar_canvas.bbox("all"))
-
-        def _on_sidebar_canvas_config(event):
-            self._sidebar_canvas.itemconfig(self._sidebar_window, width=event.width)
-
-        self._sidebar_content.bind("<Configure>", _on_sidebar_content_config)
-        self._sidebar_canvas.bind("<Configure>", _on_sidebar_canvas_config)
-
-        # Mousewheel scrolling
-        def _on_mousewheel(event):
-            if self._sidebar_canvas.winfo_exists():
-                delta = -1 * (event.delta // 120) if event.delta else 0
-                self._sidebar_canvas.yview_scroll(delta, "units")
-
-        def _bind_mousewheel(widget):
-            widget.bind("<MouseWheel>", _on_mousewheel, add="+")
-            for child in widget.winfo_children():
-                _bind_mousewheel(child)
-
-        self.bind_sidebar_mousewheel = _bind_mousewheel
-        self._sidebar_canvas.bind("<MouseWheel>", _on_mousewheel)
-        self._sidebar_content.bind("<MouseWheel>", _on_mousewheel)
-
-        # Right Display Area (Holds either Dual Fan Charts or Single Fan Chart)
         self.right_panel = tk.Frame(self.body_frame, bg=DARK_BG)
-        self.right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        self.right_panel.pack(fill=tk.BOTH, expand=True)
 
-        # Build Sidebar Content
-        self._build_sidebar_controls()
-        self.bind_sidebar_mousewheel(self._sidebar_content)
-
-        # Build Right Views
-        self._build_auto_view()
-        self._build_manual_view()
-
-        # Show initial mode
-        self._update_view_visibility()
-
-    def _build_sidebar_controls(self):
-        parent = self._sidebar_content
-
-        # Section 1: Time Horizon Selector (Common to both modes)
-        tk.Label(parent, text="SCAN TIME HORIZON", font=("Segoe UI", 9, "bold"), fg=GOLD, bg=PANEL_BG).pack(anchor="w", pady=(0, 4))
+        # Initialize internal variables required by settings & models
         self.horizon_var = tk.StringVar(value="4 Jam (48 bars M5)")
-        horizon_options = [h[0] for h in HORIZON_PRESETS_M5]
-        self.horizon_combo = ttk.Combobox(
-            parent, textvariable=self.horizon_var, values=horizon_options, state="readonly", font=("Segoe UI", 9)
-        )
-        self.horizon_combo.pack(fill=tk.X, pady=(0, 8))
-        self.horizon_combo.bind("<<ComboboxSelected>>", lambda e: self._on_horizon_change())
-
-        # Section 1B: Candle Timeframe Base (M5 Default vs M1 Scalper)
-        tk.Label(parent, text="CANDLE TIMEFRAME BASE", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w", pady=(0, 2))
-        tf_frame = tk.Frame(parent, bg=PANEL_BG)
-        tf_frame.pack(fill=tk.X, pady=(0, 10))
-
-        self.btn_tf_m5 = tk.Button(
-            tf_frame, text="M5 (Default)", font=("Segoe UI", 8, "bold"),
-            bg=GOLD, fg="#0b0f17", relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2",
-            command=lambda: self._set_timeframe("M5")
-        )
-        self.btn_tf_m5.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
-
-        self.btn_tf_m1 = tk.Button(
-            tf_frame, text="M1 (Scalper)", font=("Segoe UI", 8, "bold"),
-            bg=INPUT_BG, fg=TEXT_MUTED, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2",
-            command=lambda: self._set_timeframe("M1")
-        )
-        self.btn_tf_m1.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 0))
-
-        # Section 2: Replays & Spread
-        sub_row = tk.Frame(parent, bg=PANEL_BG)
-        sub_row.pack(fill=tk.X, pady=(0, 8))
-
-        f_rep = tk.Frame(sub_row, bg=PANEL_BG)
-        f_rep.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
-        tk.Label(f_rep, text="Replays", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w")
-        self.replays_var = tk.StringVar(value="5,000")
-        self.replays_combo = ttk.Combobox(
-            f_rep, textvariable=self.replays_var,
-            values=["100", "250", "500", "1,000", "3,000", "5,000", "10,000"],
-            state="readonly", font=("Segoe UI", 9)
-        )
-        self.replays_combo.pack(fill=tk.X)
-
-        f_spr = tk.Frame(sub_row, bg=PANEL_BG)
-        f_spr.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(4, 0))
-        tk.Label(f_spr, text="Spread ($)", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w")
         self.spread_var = tk.StringVar(value="0.24")
-        self.spread_entry = tk.Entry(
-            f_spr, textvariable=self.spread_var, font=("Segoe UI", 9),
-            bg=INPUT_BG, fg=TEXT_PRIMARY, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD
-        )
-        self.spread_entry.pack(fill=tk.X, ipady=2)
-
-        # Section 2B: Statistical Methodology Options (User Selectable & Collapsible)
-        method_card = tk.Frame(parent, bg=CARD_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
-        method_card.pack(fill=tk.X, pady=(0, 10))
-
-        # Collapsible header
-        method_header = tk.Frame(method_card, bg=CARD_BG)
-        method_header.pack(fill=tk.X)
-        self.method_toggle_btn = tk.Label(
-            method_header, text="⚙️ ADVANCED SETTINGS ▶", font=("Segoe UI", 8, "bold"),
-            fg=GOLD, bg=CARD_BG, cursor="hand2"
-        )
-        self.method_toggle_btn.pack(side=tk.LEFT)
-
-        self.method_body = tk.Frame(method_card, bg=CARD_BG)
-        # Hidden by default so DUAL AUTO TP/SL card is immediately visible!
-
-        def _toggle_method_card(event=None):
-            if self.method_body.winfo_ismapped():
-                self.method_body.pack_forget()
-                self.method_toggle_btn.configure(text="⚙️ ADVANCED SETTINGS ▶")
-            else:
-                self.method_body.pack(fill=tk.X, pady=(6, 0))
-                self.method_toggle_btn.configure(text="⚙️ ADVANCED SETTINGS ▼")
-            if hasattr(self, "_sidebar_canvas"):
-                self.root.after(10, lambda: self._sidebar_canvas.configure(scrollregion=self._sidebar_canvas.bbox("all")))
-
-        self.method_toggle_btn.bind("<Button-1>", _toggle_method_card)
-        method_header.bind("<Button-1>", _toggle_method_card)
-
-        tk.Label(self.method_body, text="ENGINE SELECTION", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w")
         self.engine_mode_var = tk.StringVar(value="Legacy V1 (Default)")
-        self.engine_mode_combo = ttk.Combobox(
-            self.method_body, textvariable=self.engine_mode_var,
-            values=["Legacy V1 (Default)", "Enhanced OHLC V2", "Compare V1 vs V2"],
-            state="readonly", font=("Segoe UI", 8)
-        )
-        self.engine_mode_combo.pack(fill=tk.X, pady=(2, 6))
-        tk.Label(self.method_body, text="V2 uses block bootstrap + conservative collision handling.", font=("Segoe UI", 7), fg=TEXT_MUTED, bg=CARD_BG, wraplength=280, justify=tk.LEFT).pack(anchor="w", pady=(0, 5))
-
-        tk.Label(self.method_body, text="LEGACY V1 METHODOLOGY", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w")
-
-        tk.Label(self.method_body, text="Fan Chart Projection", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w", pady=(4, 1))
         self.proj_mode_var = tk.StringVar(value="Two-Stream Free Drift (Recommended)")
-        self.proj_combo = ttk.Combobox(
-            self.method_body, textvariable=self.proj_mode_var,
-            values=list(PROJECTION_MODES.keys()), state="readonly", font=("Segoe UI", 8)
-        )
-        self.proj_combo.pack(fill=tk.X)
-        self.proj_combo.bind("<<ComboboxSelected>>", lambda e: self._on_methodology_change())
-
-        tk.Label(self.method_body, text="Collision Tie-Break", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w", pady=(4, 1))
         self.tie_break_var = tk.StringVar(value="Smart Candle Anatomy (Recommended)")
-        self.tb_combo = ttk.Combobox(
-            self.method_body, textvariable=self.tie_break_var,
-            values=list(TIE_BREAK_MODES.keys()), state="readonly", font=("Segoe UI", 8)
-        )
-        self.tb_combo.pack(fill=tk.X)
-        self.tb_combo.bind("<<ComboboxSelected>>", lambda e: self._on_methodology_change())
-
-        tk.Label(self.method_body, text="Seasonality Filter", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w", pady=(4, 1))
         self.seasonality_var = tk.StringVar(value="Off (Default/Asli)")
-        self.seasonality_combo = ttk.Combobox(
-            self.method_body, textvariable=self.seasonality_var,
-            values=list(SEASONALITY_MODES.keys()), state="readonly", font=("Segoe UI", 8), cursor="hand2"
-        )
-        self.seasonality_combo.pack(fill=tk.X)
-        self.seasonality_combo.bind("<<ComboboxSelected>>", lambda e: self._on_methodology_change())
-
-        tk.Label(self.method_body, text="Price Grid Lines", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w", pady=(4, 1))
         self.grid_lines_var = tk.StringVar(value="Dynamic Adaptive (Default)")
-        self.grid_lines_combo = ttk.Combobox(
-            self.method_body, textvariable=self.grid_lines_var,
-            values=["Dynamic Adaptive (Default)", "25 Lines", "50 Lines"], state="readonly", font=("Segoe UI", 8), cursor="hand2"
-        )
-        self.grid_lines_combo.pack(fill=tk.X)
-        self.grid_lines_combo.bind("<<ComboboxSelected>>", lambda e: self._on_display_setting_change())
 
-        # Section 3A: AUTO MODE SPECIFIC CONTROLS
-        self.auto_sidebar_frame = tk.Frame(parent, bg=PANEL_BG)
-        
-        # Strategy Selector Card
-        strat_card = tk.Frame(self.auto_sidebar_frame, bg=CARD_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
-        strat_card.pack(fill=tk.X, pady=(0, 10))
-
-        tk.Label(strat_card, text="🧠 ENTRY STRATEGY", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=CARD_BG).pack(anchor="w")
-        self.strategy_var = tk.StringVar(value="ATR Pullback & Swing (Default)")
-        self.strategy_combo = ttk.Combobox(
-            strat_card, textvariable=self.strategy_var,
-            values=[
-                "ATR Pullback & Swing (Default)",
-                "Breakout + POC Retest",
-                "Liquidity Sweep + FVG",
-                "Session ORB (Asia/London/NY)",
-                "Bollinger Extremes (Z-Score)",
-                "Accumulation + Inverse FVG (IFVG)",
-                "Liquidity Sweep + Shift Structure (SMS)",
-                "Liquidity Absorption + Volume Bubbles",
-                "Order Flow Footprint Proxy"
-            ],
-            state="readonly", font=("Segoe UI", 8)
-        )
-        self.strategy_combo.pack(fill=tk.X, pady=(4, 4))
-        self.strategy_combo.bind("<<ComboboxSelected>>", lambda e: self._on_strategy_change())
-        
-        self.strategy_desc_label = tk.Label(
-            strat_card,
-            text="Pencarian level limit dari pullback ATR bertingkat dan swing structure 24 bar.",
-            font=("Segoe UI", 7), fg=TEXT_MUTED, bg=CARD_BG, wraplength=280, justify=tk.LEFT
-        )
-        self.strategy_desc_label.pack(anchor="w", pady=(0, 4))
-
-        tk.Label(strat_card, text="Candidate Grid (Fine-Tuning)", font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=CARD_BG).pack(anchor="w")
-        self.candidate_grid_var = tk.StringVar(value="0 (Versi Asli / Baseline)")
-        self.candidate_grid_combo = ttk.Combobox(
-            strat_card, textvariable=self.candidate_grid_var,
-            values=[
-                "0 (Versi Asli / Baseline)",
-                "5 Variasi (Cepat)",
-                "10 Variasi (Seimbang)",
-                "20 Variasi (Optimal Brute-Force)"
-            ],
-            state="readonly", font=("Segoe UI", 8)
-        )
-        self.candidate_grid_combo.pack(fill=tk.X, pady=(2, 0))
-        self.candidate_grid_combo.bind("<<ComboboxSelected>>", lambda e: self.execute_auto_scan() if self.active_mode == "auto" else None)
-
-        # Dual Auto TP/SL search configuration (hidden in Manual mode).
-        tpsl_card = tk.Frame(self.auto_sidebar_frame, bg=CARD_BG, padx=10, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
-        tpsl_card.pack(fill=tk.X, pady=(0, 10))
-        tk.Label(tpsl_card, text="🎯 DUAL AUTO TP / SL", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=CARD_BG).pack(anchor="w")
+        # TP/SL Variables
         self.tpsl_mode_var = tk.StringVar(value="Auto Optimize")
-        self.tpsl_mode_combo = ttk.Combobox(
-            tpsl_card, textvariable=self.tpsl_mode_var,
-            values=["Auto Optimize", "Fixed TP/SL", "TP/SL Range", "Risk Reward"],
-            state="readonly", font=("Segoe UI", 8)
-        )
-        self.tpsl_mode_combo.pack(fill=tk.X, pady=(4, 5))
-        self.tpsl_mode_combo.bind("<<ComboboxSelected>>", lambda e: self._on_tpsl_mode_change())
-        self.tpsl_fields_frame = tk.Frame(tpsl_card, bg=CARD_BG)
-        self.tpsl_fields_frame.pack(fill=tk.X)
         self.point_size_var = tk.StringVar(value="0.01")
         self.fixed_tp_points_var = tk.StringVar(value="2000")
         self.fixed_sl_points_var = tk.StringVar(value="1000")
@@ -609,7 +434,7 @@ class TimeMachineProGUI:
         self.rr_ratio_var = tk.StringVar(value="1:2.0")
         self.rr_sl_points_var = tk.StringVar(value="1000")
 
-        # Auto re-calculate / re-scan when research points are edited
+        # Trace TP/SL variable edits for auto-recalculation
         for var in (
             self.point_size_var, self.fixed_tp_points_var, self.fixed_sl_points_var,
             self.tp_min_points_var, self.tp_max_points_var, self.tp_step_points_var,
@@ -618,64 +443,28 @@ class TimeMachineProGUI:
         ):
             var.trace_add("write", lambda *args: self._on_tpsl_points_modified())
 
-        self._render_tpsl_fields()
+        # Initialize combobox references for compatibility with tests & settings persistence
+        self.horizon_combo = ttk.Combobox(self.right_panel, textvariable=self.horizon_var, values=[h[0] for h in HORIZON_PRESETS_M5], state="readonly")
+        self.engine_mode_combo = ttk.Combobox(self.right_panel, textvariable=self.engine_mode_var, values=["Legacy V1 (Default)", "Enhanced OHLC V2", "Compare V1 vs V2"], state="readonly")
+        self.proj_combo = ttk.Combobox(self.right_panel, textvariable=self.proj_mode_var, values=list(PROJECTION_MODES.keys()), state="readonly")
+        self.tb_combo = ttk.Combobox(self.right_panel, textvariable=self.tie_break_var, values=list(TIE_BREAK_MODES.keys()), state="readonly")
+        self.seasonality_combo = ttk.Combobox(self.right_panel, textvariable=self.seasonality_var, values=list(SEASONALITY_MODES.keys()), state="readonly")
+        self.grid_lines_combo = ttk.Combobox(self.right_panel, textvariable=self.grid_lines_var, values=["Dynamic Adaptive (Default)", "25 Lines", "50 Lines"], state="readonly")
+        self.tpsl_mode_combo = ttk.Combobox(self.right_panel, textvariable=self.tpsl_mode_var, values=["Auto Optimize", "Fixed TP/SL", "TP/SL Range", "Risk Reward"], state="readonly")
 
-        # Section 3B: MANUAL MODE SPECIFIC CONTROLS
-        self.manual_sidebar_frame = tk.Frame(parent, bg=PANEL_BG)
+        # Dummy button bindings for data sources (re-used in modal)
+        self.btn_src_mt5 = tk.Button(self.right_panel, text="MT5")
+        self.btn_src_comex = tk.Button(self.right_panel, text="COMEX")
 
-        # Direction Toggle
-        tk.Label(self.manual_sidebar_frame, text="Order Direction", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w")
-        dir_frame = tk.Frame(self.manual_sidebar_frame, bg=PANEL_BG)
-        dir_frame.pack(fill=tk.X, pady=(2, 6))
+        # Container for TP/SL fields in settings modal
+        self.tpsl_fields_frame = tk.Frame(self.right_panel)
 
-        self.direction_var = tk.StringVar(value="BUY")
-        self.buy_btn = tk.Button(
-            dir_frame, text="▲ BUY", font=("Segoe UI", 9, "bold"),
-            bg=GREEN, fg="#ffffff", relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2",
-            command=lambda: self._set_direction("BUY")
-        )
-        self.buy_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
+        # Build Dual Auto View & Manual View
+        self._build_auto_view()
+        self._build_manual_view()
 
-        self.sell_btn = tk.Button(
-            dir_frame, text="▼ SELL", font=("Segoe UI", 9, "bold"),
-            bg=INPUT_BG, fg=TEXT_MUTED, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD, cursor="hand2",
-            command=lambda: self._set_direction("SELL")
-        )
-        self.sell_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 0))
-
-        # Entry Price
-        tk.Label(self.manual_sidebar_frame, text="Entry Price ($)", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w")
-        self.manual_entry_var = tk.StringVar(value="3875.00")
-        self.manual_entry_var.trace_add("write", self._on_manual_price_change)
-        tk.Entry(
-            self.manual_sidebar_frame, textvariable=self.manual_entry_var, font=("Segoe UI", 10),
-            bg=INPUT_BG, fg=TEXT_PRIMARY, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD
-        ).pack(fill=tk.X, pady=(1, 5), ipady=2)
-
-        # Stop Loss
-        tk.Label(self.manual_sidebar_frame, text="Stop Loss ($)", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w")
-        self.manual_stop_var = tk.StringVar(value="3850.00")
-        self.manual_stop_var.trace_add("write", self._on_manual_price_change)
-        tk.Entry(
-            self.manual_sidebar_frame, textvariable=self.manual_stop_var, font=("Segoe UI", 10),
-            bg=INPUT_BG, fg=RED, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD
-        ).pack(fill=tk.X, pady=(1, 5), ipady=2)
-
-        # Take Profit
-        tk.Label(self.manual_sidebar_frame, text="Take Profit ($)", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w")
-        self.manual_target_var = tk.StringVar(value="3925.00")
-        self.manual_target_var.trace_add("write", self._on_manual_price_change)
-        tk.Entry(
-            self.manual_sidebar_frame, textvariable=self.manual_target_var, font=("Segoe UI", 10),
-            bg=INPUT_BG, fg=GREEN, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD
-        ).pack(fill=tk.X, pady=(1, 5), ipady=2)
-
-        # Manual R:R badge
-        self.manual_rr_lbl = tk.Label(
-            self.manual_sidebar_frame, text="Risk: $25.00 | Reward: $50.00 | 2.00 R",
-            font=("Segoe UI", 8, "bold"), fg=GOLD, bg=CARD_BG, pady=4
-        )
-        self.manual_rr_lbl.pack(fill=tk.X, pady=(2, 10))
+        # Show initial mode
+        self._update_view_visibility()
 
     # ========================== AUTO DUAL FAN CHART VIEW ==========================
     def _build_auto_view(self):
@@ -750,9 +539,68 @@ class TimeMachineProGUI:
     def _build_manual_view(self):
         self.manual_view_frame = tk.Frame(self.right_panel, bg=DARK_BG)
 
+        # Top Control Ribbon for Manual Setup (Entry, SL, TP, Direction, Run)
+        m_ribbon = tk.Frame(self.manual_view_frame, bg=PANEL_BG, padx=12, pady=6, highlightbackground=BORDER_COL, highlightthickness=1)
+        m_ribbon.pack(fill=tk.X, pady=(0, 6))
+
+        # Direction buttons
+        self.direction_var = tk.StringVar(value="BUY")
+        dir_box = tk.Frame(m_ribbon, bg=PANEL_BG)
+        dir_box.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.buy_btn = tk.Button(
+            dir_box, text="▲ BUY", font=("Segoe UI", 8, "bold"),
+            bg=GREEN, fg="#ffffff", relief=tk.FLAT, cursor="hand2", padx=8, pady=2,
+            command=lambda: self._set_direction("BUY")
+        )
+        self.buy_btn.pack(side=tk.LEFT, padx=(0, 2))
+
+        self.sell_btn = tk.Button(
+            dir_box, text="▼ SELL", font=("Segoe UI", 8, "bold"),
+            bg=INPUT_BG, fg=TEXT_MUTED, relief=tk.FLAT, cursor="hand2", padx=8, pady=2,
+            command=lambda: self._set_direction("SELL")
+        )
+        self.sell_btn.pack(side=tk.LEFT)
+
+        def make_m_input(parent, label, var, fg_col=TEXT_PRIMARY):
+            f = tk.Frame(parent, bg=PANEL_BG)
+            f.pack(side=tk.LEFT, padx=6)
+            tk.Label(f, text=label, font=("Segoe UI", 7, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w")
+            e = tk.Entry(
+                f, textvariable=var, font=("Segoe UI", 9, "bold"), width=9,
+                bg=INPUT_BG, fg=fg_col, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD
+            )
+            e.pack(ipady=1)
+            return e
+
+        self.manual_entry_var = tk.StringVar(value="3875.00")
+        self.manual_entry_var.trace_add("write", self._on_manual_price_change)
+        make_m_input(m_ribbon, "Entry Price ($)", self.manual_entry_var)
+
+        self.manual_stop_var = tk.StringVar(value="3850.00")
+        self.manual_stop_var.trace_add("write", self._on_manual_price_change)
+        make_m_input(m_ribbon, "Stop Loss ($)", self.manual_stop_var, fg_col=RED)
+
+        self.manual_target_var = tk.StringVar(value="3925.00")
+        self.manual_target_var.trace_add("write", self._on_manual_price_change)
+        make_m_input(m_ribbon, "Take Profit ($)", self.manual_target_var, fg_col=GREEN)
+
+        self.manual_rr_lbl = tk.Label(
+            m_ribbon, text="Risk: $25.00 | Reward: $50.00 | 2.00 R",
+            font=("Segoe UI", 8, "bold"), fg=GOLD, bg=CARD_BG, padx=8, pady=4,
+            highlightbackground=BORDER_COL, highlightthickness=1
+        )
+        self.manual_rr_lbl.pack(side=tk.LEFT, padx=8)
+
+        tk.Button(
+            m_ribbon, text="🚀 SIMULASI", font=("Segoe UI", 8, "bold"),
+            bg=GOLD, fg="#0b0f17", relief=tk.FLAT, cursor="hand2", padx=10, pady=2,
+            command=self.execute_manual_simulation
+        ).pack(side=tk.LEFT, padx=6)
+
         # 4 Stat Cards in Row
         m_score_row = tk.Frame(self.manual_view_frame, bg=DARK_BG)
-        m_score_row.pack(fill=tk.X, pady=(0, 8))
+        m_score_row.pack(fill=tk.X, pady=(0, 6))
 
         self.m_card_win = self._create_card(m_score_row, "TARGET FIRST", "-- %", GREEN)
         self.m_card_loss = self._create_card(m_score_row, "STOP FIRST", "-- %", RED)
@@ -760,18 +608,18 @@ class TimeMachineProGUI:
         self.m_card_r = self._create_card(m_score_row, "EXPECTED RETURN", "-- R", GOLD)
 
         # Verdict
-        self.m_verdict_card = tk.Frame(self.manual_view_frame, bg=PANEL_BG, padx=12, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
-        self.m_verdict_card.pack(fill=tk.X, pady=(0, 8))
-        self.m_verdict_lbl = tk.Label(self.m_verdict_card, text="Click 'RUN SIMULATION' to test custom setup.", font=("Segoe UI", 11, "bold"), fg=TEXT_PRIMARY, bg=PANEL_BG, anchor="w")
+        self.m_verdict_card = tk.Frame(self.manual_view_frame, bg=PANEL_BG, padx=12, pady=6, highlightbackground=BORDER_COL, highlightthickness=1)
+        self.m_verdict_card.pack(fill=tk.X, pady=(0, 6))
+        self.m_verdict_lbl = tk.Label(self.m_verdict_card, text="Click 'RUN SIMULATION' to test custom setup.", font=("Segoe UI", 10, "bold"), fg=TEXT_PRIMARY, bg=PANEL_BG, anchor="w")
         self.m_verdict_lbl.pack(fill=tk.X)
 
         # Single Manual Canvas
         m_chart_box = tk.Frame(self.manual_view_frame, bg=PANEL_BG, highlightbackground=BORDER_COL, highlightthickness=1)
         m_chart_box.pack(fill=tk.BOTH, expand=True)
 
-        m_chart_header = tk.Frame(m_chart_box, bg=PANEL_BG, padx=10, pady=6)
+        m_chart_header = tk.Frame(m_chart_box, bg=PANEL_BG, padx=10, pady=4)
         m_chart_header.pack(fill=tk.X)
-        tk.Label(m_chart_header, text="📊 PROBABILITY PATH SIMULATION", font=("Segoe UI", 10, "bold"), fg=GOLD, bg=PANEL_BG).pack(side=tk.LEFT)
+        tk.Label(m_chart_header, text="📊 PROBABILITY PATH SIMULATION", font=("Segoe UI", 9, "bold"), fg=GOLD, bg=PANEL_BG).pack(side=tk.LEFT)
         btn_reset_manual = tk.Button(
             m_chart_header, text="⟲ Reset Zoom", font=("Segoe UI", 8),
             bg=INPUT_BG, fg=TEXT_MUTED, activebackground=PANEL_BG, activeforeground=GOLD,
@@ -805,21 +653,21 @@ class TimeMachineProGUI:
 
     def _update_view_visibility(self):
         if self.active_mode == "auto":
-            self.manual_sidebar_frame.pack_forget()
-            self.auto_sidebar_frame.pack(fill=tk.BOTH, expand=True)
-            self.manual_view_frame.pack_forget()
-            self.auto_view_frame.pack(fill=tk.BOTH, expand=True)
-            if hasattr(self, "manual_action_bar") and hasattr(self, "auto_action_bar"):
-                self.manual_action_bar.pack_forget()
-                self.auto_action_bar.pack(fill=tk.X)
+            if hasattr(self, "manual_view_frame"):
+                self.manual_view_frame.pack_forget()
+            if hasattr(self, "auto_view_frame"):
+                self.auto_view_frame.pack(fill=tk.BOTH, expand=True)
+            if hasattr(self, "btn_run_manual") and hasattr(self, "btn_run_auto"):
+                self.btn_run_manual.pack_forget()
+                self.btn_run_auto.pack(side=tk.LEFT, pady=6, padx=(0, 2))
         else:
-            self.auto_sidebar_frame.pack_forget()
-            self.manual_sidebar_frame.pack(fill=tk.BOTH, expand=True)
-            self.auto_view_frame.pack_forget()
-            self.manual_view_frame.pack(fill=tk.BOTH, expand=True)
-            if hasattr(self, "manual_action_bar") and hasattr(self, "auto_action_bar"):
-                self.auto_action_bar.pack_forget()
-                self.manual_action_bar.pack(fill=tk.X)
+            if hasattr(self, "auto_view_frame"):
+                self.auto_view_frame.pack_forget()
+            if hasattr(self, "manual_view_frame"):
+                self.manual_view_frame.pack(fill=tk.BOTH, expand=True)
+            if hasattr(self, "btn_run_manual") and hasattr(self, "btn_run_auto"):
+                self.btn_run_auto.pack_forget()
+                self.btn_run_manual.pack(side=tk.LEFT, pady=6, padx=(0, 2))
 
     def _switch_data_source(self, source):
         self.current_source = source
@@ -1072,6 +920,8 @@ class TimeMachineProGUI:
         self._fetch_data()
         # Automatically run dual auto-scan on startup
         self.root.after(300, self.execute_auto_scan)
+        # Start scheduled auto-refresh loop (default 15s)
+        self.root.after(1000, self._schedule_next_auto_refresh)
 
     def _fetch_data(self):
         try:
@@ -1134,6 +984,44 @@ class TimeMachineProGUI:
         self.price_badge.configure(text="Refreshing...")
         threading.Thread(target=lambda: [self._fetch_data(), self.execute_auto_scan() if self.active_mode == "auto" else None], daemon=True).start()
 
+    def _on_auto_refresh_change(self):
+        """Handle user changing auto-refresh interval (Off, 5s, 10s, 15s, 30s, 60s)."""
+        if self._auto_refresh_job:
+            try:
+                self.root.after_cancel(self._auto_refresh_job)
+            except Exception:
+                pass
+            self._auto_refresh_job = None
+        self._schedule_next_auto_refresh()
+
+    def _schedule_next_auto_refresh(self):
+        """Schedule periodic auto-refresh cycle if interval is enabled."""
+        val = getattr(self, "auto_refresh_var", None)
+        if not val:
+            return
+        choice = val.get().strip().lower()
+        sec_map = {"5s": 5, "10s": 10, "15s": 15, "30s": 30, "60s": 60}
+        seconds = sec_map.get(choice)
+        if not seconds:
+            return
+
+        self._auto_refresh_job = self.root.after(seconds * 1000, self._auto_refresh_tick)
+
+    def _auto_refresh_tick(self):
+        """Triggered periodically to fetch fresh market data and re-calculate setup odds."""
+        self._auto_refresh_job = None
+        def bg_sync():
+            try:
+                self._fetch_data()
+                if self.active_mode == "auto" and not getattr(self, "_is_scanning", False):
+                    self.root.after(0, self.execute_auto_scan)
+            except Exception:
+                pass
+            finally:
+                self.root.after(0, self._schedule_next_auto_refresh)
+
+        threading.Thread(target=bg_sync, daemon=True).start()
+
     def _get_selected_horizon_bars(self):
         h_text = self.horizon_var.get()
         interval = 1 if self.current_timeframe == "M1" else 5
@@ -1177,6 +1065,7 @@ class TimeMachineProGUI:
 
         self.btn_run_auto.configure(state=tk.DISABLED, text="⚡ SCANNING...")
         self.dual_summary_title.configure(text="⏳ Scanning BUY & SELL candidates...", fg=GOLD)
+        self._is_scanning = True
 
         def worker():
             try:
@@ -1198,6 +1087,7 @@ class TimeMachineProGUI:
                 err_msg = str(e)
                 self.root.after(0, lambda msg=err_msg: self._show_scan_error(msg))
             finally:
+                self._is_scanning = False
                 self.root.after(0, lambda: self.btn_run_auto.configure(state=tk.NORMAL, text="⚡ SCAN DUAL SETUPS"))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1791,6 +1681,218 @@ class TimeMachineProGUI:
             return
         self._render_cone(c, self.manual_result, is_buy=(self.direction_var.get() == "BUY"))
 
+    # ========================== SETTINGS MODAL & SIGNAL ACTIONS ==========================
+    def _open_settings_modal(self):
+        """Open floating Chrome-style Settings modal dialog for global and engine configurations."""
+        modal = tk.Toplevel(self.root)
+        modal.title("⚙️ Global Settings & Engine Configuration")
+        modal.geometry("540x520")
+        modal.configure(bg=PANEL_BG)
+        modal.transient(self.root)
+        modal.grab_set()
+
+        # Modal Header
+        m_head = tk.Frame(modal, bg="#0d1117", padx=16, pady=12, highlightbackground=BORDER_COL, highlightthickness=1)
+        m_head.pack(fill=tk.X)
+        tk.Label(m_head, text="⚙️ PENGATURAN GLOBAL & ENGINE", font=("Segoe UI", 11, "bold"), fg=GOLD, bg="#0d1117").pack(side=tk.LEFT)
+        close_lbl = tk.Label(m_head, text="✕", font=("Segoe UI", 11, "bold"), fg=TEXT_MUTED, bg="#0d1117", cursor="hand2")
+        close_lbl.pack(side=tk.RIGHT)
+        close_lbl.bind("<Button-1>", lambda e: modal.destroy())
+
+        # Modal Notebook / Tabs
+        style = ttk.Style()
+        notebook = ttk.Notebook(modal)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=14, pady=12)
+
+        # Tab 1: Data Source & Time Horizon
+        tab_data = tk.Frame(notebook, bg=PANEL_BG, padx=14, pady=12)
+        notebook.add(tab_data, text=" 🔌 Data Source ")
+
+        tk.Label(tab_data, text="SUMBER KONEKSI DATA HARGA", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=PANEL_BG).pack(anchor="w", pady=(0, 4))
+        ds_box = tk.Frame(tab_data, bg=CARD_BG, padx=8, pady=6, highlightbackground=BORDER_COL, highlightthickness=1)
+        ds_box.pack(fill=tk.X, pady=(0, 12))
+
+        btn_mt5 = tk.Button(
+            ds_box, text="🔗 MetaTrader 5 (Live)", font=("Segoe UI", 9, "bold"),
+            bg=GOLD if self.current_source == "mt5" else INPUT_BG,
+            fg="#0b0f17" if self.current_source == "mt5" else TEXT_MUTED,
+            relief=tk.FLAT, cursor="hand2", padx=10, pady=4,
+            command=lambda: [self._switch_data_source("mt5"), update_ds_btns()]
+        )
+        btn_mt5.pack(side=tk.LEFT, padx=(0, 4))
+
+        btn_comex = tk.Button(
+            ds_box, text="🌐 COMEX Gold (Historical)", font=("Segoe UI", 9, "bold"),
+            bg=GOLD if self.current_source == "comex" else INPUT_BG,
+            fg="#0b0f17" if self.current_source == "comex" else TEXT_MUTED,
+            relief=tk.FLAT, cursor="hand2", padx=10, pady=4,
+            command=lambda: [self._switch_data_source("comex"), update_ds_btns()]
+        )
+        btn_comex.pack(side=tk.LEFT)
+
+        def update_ds_btns():
+            if self.current_source == "mt5":
+                btn_mt5.configure(bg=GOLD, fg="#0b0f17")
+                btn_comex.configure(bg=INPUT_BG, fg=TEXT_MUTED)
+            else:
+                btn_comex.configure(bg=GOLD, fg="#0b0f17")
+                btn_mt5.configure(bg=INPUT_BG, fg=TEXT_MUTED)
+
+        tk.Label(tab_data, text="SCAN TIME HORIZON", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=PANEL_BG).pack(anchor="w", pady=(0, 4))
+        self.horizon_combo = ttk.Combobox(
+            tab_data, textvariable=self.horizon_var,
+            values=[h[0] for h in (HORIZON_PRESETS_M1 if self.current_timeframe == "M1" else HORIZON_PRESETS_M5)],
+            state="readonly", font=("Segoe UI", 9)
+        )
+        self.horizon_combo.pack(fill=tk.X, pady=(0, 12))
+        self.horizon_combo.bind("<<ComboboxSelected>>", lambda e: self._on_horizon_change())
+
+        tk.Label(tab_data, text="SPREAD BID/ASK SIMULASI ($)", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=PANEL_BG).pack(anchor="w", pady=(0, 4))
+        tk.Entry(
+            tab_data, textvariable=self.spread_var, font=("Segoe UI", 9),
+            bg=INPUT_BG, fg=TEXT_PRIMARY, relief=tk.FLAT, highlightthickness=1, highlightbackground=BORDER_COL, highlightcolor=GOLD
+        ).pack(fill=tk.X, ipady=3, pady=(0, 12))
+
+        # Tab 2: Monte Carlo Engine Configuration
+        tab_engine = tk.Frame(notebook, bg=PANEL_BG, padx=14, pady=12)
+        notebook.add(tab_engine, text=" 🎲 Monte Carlo Engine ")
+
+        tk.Label(tab_engine, text="ENGINE SELECTION", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=PANEL_BG).pack(anchor="w", pady=(0, 2))
+        self.engine_mode_combo = ttk.Combobox(
+            tab_engine, textvariable=self.engine_mode_var,
+            values=["Legacy V1 (Default)", "Enhanced OHLC V2", "Compare V1 vs V2"],
+            state="readonly", font=("Segoe UI", 8)
+        )
+        self.engine_mode_combo.pack(fill=tk.X, pady=(0, 10))
+
+        tk.Label(tab_engine, text="FAN CHART PROJECTION MODE", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w", pady=(0, 2))
+        self.proj_combo = ttk.Combobox(
+            tab_engine, textvariable=self.proj_mode_var,
+            values=list(PROJECTION_MODES.keys()), state="readonly", font=("Segoe UI", 8)
+        )
+        self.proj_combo.pack(fill=tk.X, pady=(0, 10))
+        self.proj_combo.bind("<<ComboboxSelected>>", lambda e: self._on_methodology_change())
+
+        tk.Label(tab_engine, text="COLLISION TIE-BREAK RESOLUTION", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w", pady=(0, 2))
+        self.tb_combo = ttk.Combobox(
+            tab_engine, textvariable=self.tie_break_var,
+            values=list(TIE_BREAK_MODES.keys()), state="readonly", font=("Segoe UI", 8)
+        )
+        self.tb_combo.pack(fill=tk.X, pady=(0, 10))
+        self.tb_combo.bind("<<ComboboxSelected>>", lambda e: self._on_methodology_change())
+
+        tk.Label(tab_engine, text="SEASONALITY FILTER", font=("Segoe UI", 8, "bold"), fg=TEXT_MUTED, bg=PANEL_BG).pack(anchor="w", pady=(0, 2))
+        self.seasonality_combo = ttk.Combobox(
+            tab_engine, textvariable=self.seasonality_var,
+            values=list(SEASONALITY_MODES.keys()), state="readonly", font=("Segoe UI", 8)
+        )
+        self.seasonality_combo.pack(fill=tk.X, pady=(0, 10))
+        self.seasonality_combo.bind("<<ComboboxSelected>>", lambda e: self._on_methodology_change())
+
+        # Tab 3: Dual Auto TP/SL Configuration
+        tab_tpsl = tk.Frame(notebook, bg=PANEL_BG, padx=14, pady=12)
+        notebook.add(tab_tpsl, text=" 🎯 TP / SL Search ")
+
+        tk.Label(tab_tpsl, text="DUAL AUTO TP / SL METHOD", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=PANEL_BG).pack(anchor="w", pady=(0, 4))
+        self.tpsl_mode_combo = ttk.Combobox(
+            tab_tpsl, textvariable=self.tpsl_mode_var,
+            values=["Auto Optimize", "Fixed TP/SL", "TP/SL Range", "Risk Reward"],
+            state="readonly", font=("Segoe UI", 8)
+        )
+        self.tpsl_mode_combo.pack(fill=tk.X, pady=(0, 10))
+        self.tpsl_mode_combo.bind("<<ComboboxSelected>>", lambda e: self._on_tpsl_mode_change())
+
+        self.tpsl_fields_frame = tk.Frame(tab_tpsl, bg=CARD_BG, padx=8, pady=8, highlightbackground=BORDER_COL, highlightthickness=1)
+        self.tpsl_fields_frame.pack(fill=tk.X, pady=(0, 8))
+        self._render_tpsl_fields()
+
+        # Tab 4: Display & Visual Settings
+        tab_disp = tk.Frame(notebook, bg=PANEL_BG, padx=14, pady=12)
+        notebook.add(tab_disp, text=" 🎨 Display ")
+
+        tk.Label(tab_disp, text="PRICE GRID LINES", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=PANEL_BG).pack(anchor="w", pady=(0, 4))
+        self.grid_lines_combo = ttk.Combobox(
+            tab_disp, textvariable=self.grid_lines_var,
+            values=["Dynamic Adaptive (Default)", "25 Lines", "50 Lines"], state="readonly", font=("Segoe UI", 8)
+        )
+        self.grid_lines_combo.pack(fill=tk.X, pady=(0, 12))
+        self.grid_lines_combo.bind("<<ComboboxSelected>>", lambda e: self._on_display_setting_change())
+
+        tk.Label(tab_disp, text="AUTO REFRESH INTERVAL", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=PANEL_BG).pack(anchor="w", pady=(0, 4))
+        ar_combo_modal = ttk.Combobox(
+            tab_disp, textvariable=self.auto_refresh_var,
+            values=["Off", "5s", "10s", "15s", "30s", "60s"], state="readonly", font=("Segoe UI", 8)
+        )
+        ar_combo_modal.pack(fill=tk.X, pady=(0, 12))
+        ar_combo_modal.bind("<<ComboboxSelected>>", lambda e: self._on_auto_refresh_change())
+
+        # Bottom modal action footer
+        m_foot = tk.Frame(modal, bg=PANEL_BG, padx=14, pady=10)
+        m_foot.pack(fill=tk.X, side=tk.BOTTOM)
+        tk.Button(
+            m_foot, text="Tutup & Simpan", font=("Segoe UI", 9, "bold"),
+            bg=GOLD, fg="#0b0f17", relief=tk.FLAT, cursor="hand2", padx=12, pady=4,
+            command=lambda: [self._save_settings(), modal.destroy()]
+        ).pack(side=tk.RIGHT)
+
+    def _copy_signals_to_clipboard(self):
+        """Format the active dual auto scan setups and odds into clipboard."""
+        if not self.dual_results or "buy" not in self.dual_results or "sell" not in self.dual_results:
+            messagebox.showinfo("Clipboard", "Belum ada hasil kalkulasi untuk disalin. Jalankan SCAN terlebih dahulu.")
+            return
+
+        b = self.dual_results["buy"]
+        s = self.dual_results["sell"]
+        bp = b["plan"]
+        sp = s["plan"]
+        bo = b["odds"]
+        so = s["odds"]
+        cur = self.current_market_price
+
+        lines = [
+            "========================================",
+            "⚡ XAUUSD TIME MACHINE PRO SIGNAL REPORT",
+            f"Harga Saat Ini: ${cur:.2f} [{self.current_timeframe}]",
+            f"Strategi: {self.strategy_var.get()}",
+            "========================================",
+            "🟢 BUY LIMIT SETUP:",
+            f"  • Entry : ${bp['entry']:.2f}",
+            f"  • SL    : ${bp['stop']:.2f}",
+            f"  • TP    : ${bp['target']:.2f} (+{bp.get('target_r', 0.0):.2f} R)",
+            f"  • Touch Prob: {bp.get('entry_touch_probability_pct', 0.0):.1f}%",
+            f"  • Win Odds  : {bo.get('target_first_pct', 0.0):.1f}%",
+            f"  • Expectancy: {bp.get('fill_adjusted_simulated_avg_r', 0.0):+.2f} R",
+            "----------------------------------------",
+            "🔴 SELL LIMIT SETUP:",
+            f"  • Entry : ${sp['entry']:.2f}",
+            f"  • SL    : ${sp['stop']:.2f}",
+            f"  • TP    : ${sp['target']:.2f} (+{sp.get('target_r', 0.0):.2f} R)",
+            f"  • Touch Prob: {sp.get('entry_touch_probability_pct', 0.0):.1f}%",
+            f"  • Win Odds  : {so.get('target_first_pct', 0.0):.1f}%",
+            f"  • Expectancy: {sp.get('fill_adjusted_simulated_avg_r', 0.0):+.2f} R",
+            "========================================"
+        ]
+        text_to_copy = "\n".join(lines)
+
+        copied = False
+        try:
+            p = subprocess.Popen(["clip"], stdin=subprocess.PIPE, shell=True)
+            p.communicate(text_to_copy.encode("utf-8"))
+            copied = True
+        except Exception:
+            pass
+
+        if not copied:
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(text_to_copy)
+                self.root.update()
+                copied = True
+            except Exception:
+                pass
+
+        messagebox.showinfo("Clipboard", "Sinyal BUY dan SELL berhasil disalin ke clipboard!")
+
     # ========================== MT5 POSITION IMPORT MODAL ==========================
     def _open_positions_selector(self):
         positions = mt5_connector.get_open_gold_positions()
@@ -1859,6 +1961,7 @@ class TimeMachineProGUI:
             "manual_entry": self.manual_entry_var.get(),
             "manual_stop": self.manual_stop_var.get(),
             "manual_target": self.manual_target_var.get(),
+            "auto_refresh": self.auto_refresh_var.get() if hasattr(self, "auto_refresh_var") else "15s",
         }
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
@@ -1972,6 +2075,12 @@ class TimeMachineProGUI:
             saved_mode = settings.get("mode", "auto")
             if saved_mode in ("auto", "manual"):
                 self._set_app_mode(saved_mode)
+
+            # Restore Auto-Refresh Interval
+            saved_ar = settings.get("auto_refresh")
+            if saved_ar and hasattr(self, "auto_refresh_var") and saved_ar in ("Off", "5s", "10s", "15s", "30s", "60s"):
+                self.auto_refresh_var.set(saved_ar)
+                self._on_auto_refresh_change()
 
         except Exception:
             pass

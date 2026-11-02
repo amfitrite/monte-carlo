@@ -12,6 +12,9 @@ venv/
 env/
 .env
 
+# Backups
+old version/
+
 # Editor files
 .vscode/
 .idea/
