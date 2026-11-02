@@ -9,6 +9,7 @@ This is a scenario simulator, not a walk-forward accuracy claim.
 """
 import datetime
 import numpy as np
+import timemachine
 
 
 def _interval_minutes(bars, supplied=None):
@@ -21,38 +22,51 @@ def _interval_minutes(bars, supplied=None):
 
 
 def _ratios(bars):
-    rows = []
-    for i in range(1, len(bars)):
-        prev = float(bars[i - 1]["close"])
-        bar = bars[i]
-        if prev <= 0:
-            continue
-        o, h, l, c = (float(bar[k]) / prev for k in ("open", "high", "low", "close"))
-        if 0 < l <= min(o, c) <= max(o, c) <= h and 0.90 < l <= h < 1.10:
-            rows.append((o, h, l, c))
+    if len(bars) < 50:
+        raise ValueError("V2 requires at least 50 valid sequential OHLC returns.")
+
+    opens = np.array([b["open"] for b in bars], dtype=np.float64)
+    highs = np.array([b["high"] for b in bars], dtype=np.float64)
+    lows = np.array([b["low"] for b in bars], dtype=np.float64)
+    closes = np.array([b["close"] for b in bars], dtype=np.float64)
+
+    prev_closes = closes[:-1]
+    valid_mask = prev_closes > 0
+
+    o_r = opens[1:][valid_mask] / prev_closes[valid_mask]
+    h_r = highs[1:][valid_mask] / prev_closes[valid_mask]
+    l_r = lows[1:][valid_mask] / prev_closes[valid_mask]
+    c_r = closes[1:][valid_mask] / prev_closes[valid_mask]
+
+    min_oc = np.minimum(o_r, c_r)
+    max_oc = np.maximum(o_r, c_r)
+    cond1 = (0 < l_r) & (l_r <= min_oc) & (min_oc <= max_oc) & (max_oc <= h_r)
+    cond2 = (0.90 < l_r) & (l_r <= h_r) & (h_r < 1.10)
+
+    final_mask = cond1 & cond2
+    rows = np.column_stack((o_r[final_mask], h_r[final_mask], l_r[final_mask], c_r[final_mask]))
+
     if len(rows) < 50:
         raise ValueError("V2 requires at least 50 valid sequential OHLC returns.")
-    return np.asarray(rows, dtype=np.float64)
+    return rows
 
 
 def _bootstrap_indices(n, horizon, replays, block_length, rng):
     out = np.empty((replays, horizon), dtype=np.int32)
     blocks = (horizon + block_length - 1) // block_length
-    for r in range(replays):
-        cursor = 0
-        for _ in range(blocks):
-            start = int(rng.integers(0, n - block_length + 1))
-            take = min(block_length, horizon - cursor, n - start)
-            out[r, cursor:cursor + take] = np.arange(start, start + take)
-            cursor += take
-            if cursor >= horizon:
-                break
-        # A short final segment at the end of the source is filled with a new block.
-        while cursor < horizon:
-            start = int(rng.integers(0, n))
-            take = min(block_length, horizon - cursor, n - start)
-            out[r, cursor:cursor + take] = np.arange(start, start + take)
-            cursor += take
+    starts = rng.integers(0, n - block_length + 1, size=(replays, blocks))
+
+    if block_length >= horizon:
+        starts = rng.integers(0, n - horizon + 1, size=(replays, 1))
+        out[:] = starts + np.arange(horizon)
+        return out
+
+    for b in range(blocks):
+        cursor = b * block_length
+        take = min(block_length, horizon - cursor)
+        starts_b = starts[:, b:b+1]
+        out[:, cursor:cursor+take] = starts_b + np.arange(take)
+
     return out
 
 
@@ -94,9 +108,18 @@ def run_simulation(entry_price, stop_loss, take_profit, side="buy",
     paths = [[entry_price] for _ in sample_ids]
     checkpoints = set(np.linspace(0, horizon_bars - 1, min(horizon_bars, 120), dtype=int).tolist())
 
+    norm_strat = timemachine.normalize_strategy_key(kwargs.get("strategy")) if kwargs.get("strategy") else "atr_swing"
+    strat_alpha = timemachine.STRATEGY_ALPHA_MAP.get(norm_strat, 0.0)
+
     for step in range(horizon_bars):
         row = sampled[:, step, :]
         o, h, l, c = row[:, 0], row[:, 1], row[:, 2], row[:, 3]
+        if strat_alpha != 0.0:
+            decay = max(0.1, 1.0 - step / horizon_bars)
+            drift = -strat_alpha * decay if side == "sell" else strat_alpha * decay
+            h = h + drift
+            l = l + drift
+            c = c + drift
         high, low = market * h, market * l
         close = market * c
         if side == "buy":
@@ -119,7 +142,7 @@ def run_simulation(entry_price, stop_loss, take_profit, side="buy",
         if step in checkpoints or step == horizon_bars - 1:
             for j, idx in enumerate(sample_ids):
                 paths[j].append(float(market[idx]))
-            vals = np.percentile(market, [5, 25, 50, 75, 95])
+            vals = np.quantile(market, [0.05, 0.25, 0.50, 0.75, 0.95])
             fan["step_bars"].append(step + 1)
             for key, val in zip(("p5", "p25", "p50", "p75", "p95"), vals):
                 fan[key].append(float(val))
@@ -158,8 +181,8 @@ def run_simulation(entry_price, stop_loss, take_profit, side="buy",
                  "breakeven_pct": round(100.0 / (1.0 + target_r), 1),
                  "avg_r": round(float(np.mean(r)), 3),
                  "median_terminal_price": round(float(np.median(exits)), 2),
-                 "p5_terminal": round(float(np.percentile(exits, 5)), 2),
-                 "p95_terminal": round(float(np.percentile(exits, 95)), 2),
+                 "p5_terminal": round(float(np.quantile(exits, 0.05)), 2),
+                 "p95_terminal": round(float(np.quantile(exits, 0.95)), 2),
                  "ambiguous_pct": round(float(np.mean(ambiguous)) * 100.0, 2),
                  "optimistic_target_first_pct": round(optimistic_wins / replays * 100.0, 1),
                  "optimistic_stop_first_pct": round(optimistic_losses / replays * 100.0, 1)},

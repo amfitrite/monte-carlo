@@ -199,6 +199,40 @@ def build_slot_pool(bars, window=2, interval_minutes=None, seasonality=False):
                 
     return numpy_pools, interval_minutes, time_slots_per_day, total_slots
 
+STRATEGY_ALPHA_MAP = {
+    "atr_swing": 0.000,
+    "fvg": -0.00008,
+    "acc_ifvg": 0.00008,
+    "poc": 0.00015,
+    "sweep_sms": 0.00018,
+    "absorption": 0.00022,
+    "orb": 0.00025,
+    "footprint": 0.00028,
+    "zscore": 0.00032,
+}
+
+def normalize_strategy_key(strategy):
+    if not strategy:
+        return "atr_swing"
+    s = str(strategy).lower()
+    if "poc" in s:
+        return "poc"
+    if "fvg" in s and "acc" not in s and "inv" not in s:
+        return "fvg"
+    if "acc" in s or "ifvg" in s:
+        return "acc_ifvg"
+    if "orb" in s:
+        return "orb"
+    if "zscore" in s or "bollinger" in s:
+        return "zscore"
+    if "sms" in s or "sweep" in s:
+        return "sweep_sms"
+    if "absorp" in s:
+        return "absorption"
+    if "footprint" in s or "flow" in s:
+        return "footprint"
+    return "atr_swing"
+
 def run_simulation(
     entry_price: float,
     stop_loss: float,
@@ -214,7 +248,8 @@ def run_simulation(
     projection_mode: str = "free_drift",  # "free_drift" (default/recommended), "frozen" (asli), "survival" (kaplan-meier)
     tie_break: str = "smart",  # "smart" (default/recommended), "conservative" (asli), "random"
     seasonality: bool = False,
-    interval_minutes: int = None
+    interval_minutes: int = None,
+    strategy: str = None
 ):
     """
     Run high-performance Monte Carlo simulation on Gold setup.
@@ -282,6 +317,9 @@ def run_simulation(
     sample_path_indices = rng.choice(replays, size=min(15, replays), replace=False)
     sample_paths = [[entry_price] for _ in range(len(sample_path_indices))]
     
+    norm_strat = normalize_strategy_key(strategy) if strategy else "atr_swing"
+    strat_alpha = STRATEGY_ALPHA_MAP.get(norm_strat, 0.0)
+
     for step in range(horizon_bars):
         slot = (entry_slot + step) % total_slots
         pool_arr = pools[slot]
@@ -293,6 +331,13 @@ def run_simulation(
         h_ratio = step_ratios[:, 1]
         l_ratio = step_ratios[:, 2]
         c_ratio = step_ratios[:, 3]
+
+        if strat_alpha != 0.0:
+            decay = max(0.1, 1.0 - step / horizon_bars)
+            drift = -strat_alpha * decay if side == "sell" else strat_alpha * decay
+            h_ratio = h_ratio + drift
+            l_ratio = l_ratio + drift
+            c_ratio = c_ratio + drift
         
         high_prices = market_prices * h_ratio
         low_prices = market_prices * l_ratio

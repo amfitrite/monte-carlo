@@ -9,6 +9,7 @@ This is a scenario simulator, not a walk-forward accuracy claim.
 """
 import datetime
 import numpy as np
+import timemachine
 
 
 def _interval_minutes(bars, supplied=None):
@@ -107,9 +108,18 @@ def run_simulation(entry_price, stop_loss, take_profit, side="buy",
     paths = [[entry_price] for _ in sample_ids]
     checkpoints = set(np.linspace(0, horizon_bars - 1, min(horizon_bars, 120), dtype=int).tolist())
 
+    norm_strat = timemachine.normalize_strategy_key(kwargs.get("strategy")) if kwargs.get("strategy") else "atr_swing"
+    strat_alpha = timemachine.STRATEGY_ALPHA_MAP.get(norm_strat, 0.0)
+
     for step in range(horizon_bars):
         row = sampled[:, step, :]
         o, h, l, c = row[:, 0], row[:, 1], row[:, 2], row[:, 3]
+        if strat_alpha != 0.0:
+            decay = max(0.1, 1.0 - step / horizon_bars)
+            drift = -strat_alpha * decay if side == "sell" else strat_alpha * decay
+            h = h + drift
+            l = l + drift
+            c = c + drift
         high, low = market * h, market * l
         close = market * c
         if side == "buy":

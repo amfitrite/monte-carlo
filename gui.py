@@ -772,8 +772,8 @@ class TimeMachineProGUI:
         else:
             self.btn_mode_manual.configure(bg=GOLD, fg="#0b0f17")
             self.btn_mode_auto.configure(bg=INPUT_BG, fg=TEXT_MUTED)
-            if getattr(self, "bars_data", None):
-                self._apply_strategy_to_manual()
+            if not getattr(self, "manual_result", None) and getattr(self, "bars_data", None):
+                self.execute_manual_simulation()
         self._update_view_visibility()
 
     def _update_view_visibility(self):
@@ -948,7 +948,9 @@ class TimeMachineProGUI:
         if self.active_mode == "auto":
             self.execute_auto_scan()
         elif self.active_mode == "manual":
-            self._apply_strategy_to_manual()
+            # Re-run simulation with selected strategy while preserving manual Entry/SL/TP!
+            if getattr(self, "bars_data", None):
+                self.execute_manual_simulation()
 
     def _apply_strategy_to_manual(self):
         """Apply selected strategy's structure-based Entry, SL, and TP to manual simulation."""
@@ -2092,10 +2094,7 @@ class TimeMachineProGUI:
         else:
             self.sell_btn.configure(bg=RED, fg="#ffffff")
             self.buy_btn.configure(bg=INPUT_BG, fg=TEXT_MUTED)
-        if getattr(self, "bars_data", None):
-            self._apply_strategy_to_manual()
-        else:
-            self._on_manual_price_change()
+        self._on_manual_price_change()
         if getattr(self, "manual_result", None) and getattr(self, "bars_data", None):
             self.execute_manual_simulation()
 
@@ -2140,7 +2139,8 @@ class TimeMachineProGUI:
                     bars_data=self.bars_data,
                     projection_mode=self.current_projection_mode,
                     tie_break=self.current_tie_break,
-                    seasonality=self.current_seasonality
+                    seasonality=self.current_seasonality,
+                    strategy=self.strategy_var.get() if hasattr(self, "strategy_var") else None
                 )
                 mode = {"Legacy V1 (Default)": "legacy", "Enhanced OHLC V2": "v2", "Compare V1 vs V2": "compare"}.get(self.engine_mode_var.get(), "legacy")
                 if mode == "v2":
@@ -2173,6 +2173,10 @@ class TimeMachineProGUI:
         comparison = res.get("comparison")
         if comparison:
             v += f" | V2: TP {comparison['target_first_pct']:.1f}% / Avg {comparison['avg_r']:+.2f}R / Ambiguous {comparison['ambiguous_pct']:.1f}%"
+        strat_name = self.strategy_var.get() if hasattr(self, "strategy_var") else ""
+        if strat_name:
+            short_strat = strat_name.split("(")[0].strip()
+            v = f"[{short_strat}] {v}"
         col = GREEN if "Positive simulated expectancy" in v or ("Target" in v and "Stop Loss" not in v) else (RED if "Stop Loss" in v else GOLD)
         self.m_verdict_lbl.configure(text=f"⚖️ {v}", fg=col)
         self._draw_manual_chart()

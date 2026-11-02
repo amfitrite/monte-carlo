@@ -3,6 +3,7 @@ from unittest.mock import patch
 import tkinter as tk
 import gui
 import analyzer
+import timemachine
 import tests.test_dual_auto_analyzer as t
 import os
 
@@ -375,6 +376,70 @@ class GuiZoomAndGridTests(unittest.TestCase):
 
         self.assertNotEqual(poc_entry, boll_entry)
         self.assertNotEqual(boll_entry, fvg_entry)
+
+    def test_on_strategy_change_in_manual_mode_preserves_custom_levels(self):
+        """Verify that changing strategy or direction in manual mode NEVER overwrites custom prices."""
+        self.app.active_mode = "manual"
+        self.app.direction_var = tk.StringVar(value="SELL")
+        self.app.manual_entry_var = tk.StringVar(value="3900.13")
+        self.app.manual_stop_var = tk.StringVar(value="3931.20")
+        self.app.manual_target_var = tk.StringVar(value="3847.94")
+        self.app.spread_var = tk.StringVar(value="0.25")
+        self.app.replays_var = tk.StringVar(value="50")
+        self.app.engine_mode_var = tk.StringVar(value="Legacy V1 (Default)")
+        self.app.horizon_var = tk.StringVar(value="12 Bars (1 Jam)")
+        self.app.current_projection_mode = "free_drift"
+        self.app.current_tie_break = "smart"
+        self.app.current_seasonality = False
+        self.app.strategy_var = tk.StringVar(value="ATR Pullback & Swing (Default)")
+        self.app.bars_data = self.bars
+        self.app.manual_rr_lbl = tk.Label(self.root)
+        self.app.btn_run_manual = tk.Button(self.root)
+        self.app.m_verdict_lbl = tk.Label(self.root)
+        self.app.m_card_win = tk.Label(self.root)
+        self.app.m_card_loss = tk.Label(self.root)
+        self.app.m_card_open = tk.Label(self.root)
+        self.app.m_card_r = tk.Label(self.root)
+        self.app.manual_canvas = tk.Canvas(self.root)
+        self.app.buy_btn = tk.Button(self.root)
+        self.app.sell_btn = tk.Button(self.root)
+
+        # 1. Change strategy dropdown - prices must NOT change!
+        self.app.strategy_var.set("Breakout + POC Retest")
+        self.app._on_strategy_change()
+        self.assertEqual(self.app.manual_entry_var.get(), "3900.13")
+        self.assertEqual(self.app.manual_stop_var.get(), "3931.20")
+        self.assertEqual(self.app.manual_target_var.get(), "3847.94")
+
+        self.app.strategy_var.set("Bollinger Extremes (Z-Score)")
+        self.app._on_strategy_change()
+        self.assertEqual(self.app.manual_entry_var.get(), "3900.13")
+        self.assertEqual(self.app.manual_stop_var.get(), "3931.20")
+        self.assertEqual(self.app.manual_target_var.get(), "3847.94")
+
+        # 2. Change direction - prices must NOT change!
+        self.app._set_direction("BUY")
+        self.assertEqual(self.app.manual_entry_var.get(), "3900.13")
+        self.assertEqual(self.app.manual_stop_var.get(), "3931.20")
+        self.assertEqual(self.app.manual_target_var.get(), "3847.94")
+
+    def test_simulation_strategy_conditioning_with_fixed_levels(self):
+        """Verify that timemachine simulation with fixed levels produces distinct odds per strategy."""
+        c = self.bars["bars"][-1]["close"]
+        entry, stop, target = c, c + 5.0, c - 5.0
+        res_baseline = timemachine.run_simulation(
+            entry, stop, target, side="sell", bars_data=self.bars, replays=1000, seed=19, strategy="atr_swing"
+        )
+        res_poc = timemachine.run_simulation(
+            entry, stop, target, side="sell", bars_data=self.bars, replays=1000, seed=19, strategy="poc"
+        )
+        res_fvg = timemachine.run_simulation(
+            entry, stop, target, side="sell", bars_data=self.bars, replays=1000, seed=19, strategy="fvg"
+        )
+
+        self.assertNotEqual(res_baseline["odds"]["target_first_pct"], res_poc["odds"]["target_first_pct"])
+        self.assertNotEqual(res_poc["odds"]["target_first_pct"], res_fvg["odds"]["target_first_pct"])
+
 
 
 if __name__ == "__main__":

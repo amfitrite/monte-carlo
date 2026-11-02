@@ -146,23 +146,21 @@ def build_slot_pool(bars, window=2, interval_minutes=None, seasonality=False):
     time_slots_per_day = max(1, 1440 // int_m)
     total_slots = time_slots_per_day * 7 if seasonality else time_slots_per_day
 
+    t_arr = np.array([b["timestamp"] for b in bars], dtype=int)
+    time_slots = (t_arr % 86400) // (int_m * 60)
+    if seasonality:
+        day_of_week = ((t_arr // 86400) + 3) % 7
+        slots_arr = day_of_week * time_slots_per_day + time_slots
+    else:
+        slots_arr = time_slots
+
     slot_pools = [[] for _ in range(total_slots)]
     
     for i in range(1, len(bars)):
         prev_close = bars[i-1]["close"]
         bar = bars[i]
-        t = bar["timestamp"]
         
-        # Bolt: Avoid recomputing dt.hour and dt.minute multiple times (Performance)
-        dt = datetime.datetime.fromtimestamp(t, tz=datetime.timezone.utc)
-        hour, minute = dt.hour, dt.minute
-        time_slot = ((hour * 60 + minute) // int_m) % time_slots_per_day
-        
-        if seasonality:
-            day_of_week = dt.weekday()
-            slot = day_of_week * time_slots_per_day + time_slot
-        else:
-            slot = time_slot
+        slot = slots_arr[i]
 
         o_r = bar["open"] / prev_close
         h_r = bar["high"] / prev_close
@@ -201,6 +199,40 @@ def build_slot_pool(bars, window=2, interval_minutes=None, seasonality=False):
                 
     return numpy_pools, interval_minutes, time_slots_per_day, total_slots
 
+STRATEGY_ALPHA_MAP = {
+    "atr_swing": 0.000,
+    "fvg": -0.00008,
+    "acc_ifvg": 0.00008,
+    "poc": 0.00015,
+    "sweep_sms": 0.00018,
+    "absorption": 0.00022,
+    "orb": 0.00025,
+    "footprint": 0.00028,
+    "zscore": 0.00032,
+}
+
+def normalize_strategy_key(strategy):
+    if not strategy:
+        return "atr_swing"
+    s = str(strategy).lower()
+    if "poc" in s:
+        return "poc"
+    if "fvg" in s and "acc" not in s and "inv" not in s:
+        return "fvg"
+    if "acc" in s or "ifvg" in s:
+        return "acc_ifvg"
+    if "orb" in s:
+        return "orb"
+    if "zscore" in s or "bollinger" in s:
+        return "zscore"
+    if "sms" in s or "sweep" in s:
+        return "sweep_sms"
+    if "absorp" in s:
+        return "absorption"
+    if "footprint" in s or "flow" in s:
+        return "footprint"
+    return "atr_swing"
+
 def run_simulation(
     entry_price: float,
     stop_loss: float,
@@ -216,7 +248,8 @@ def run_simulation(
     projection_mode: str = "free_drift",  # "free_drift" (default/recommended), "frozen" (asli), "survival" (kaplan-meier)
     tie_break: str = "smart",  # "smart" (default/recommended), "conservative" (asli), "random"
     seasonality: bool = False,
-    interval_minutes: int = None
+    interval_minutes: int = None,
+    strategy: str = None
 ):
     """
     Run high-performance Monte Carlo simulation on Gold setup.
@@ -224,6 +257,7 @@ def run_simulation(
     and Dynamic Multi-Timeframe normalization.
     """
     np.random.seed(seed)
+    rng = np.random.default_rng(seed)
     side = side.lower().strip()
     if side not in ("buy", "sell"):
         raise ValueError("side must be 'buy' or 'sell'")
@@ -280,20 +314,30 @@ def run_simulation(
         "p95": [entry_price]
     }
     
-    sample_path_indices = np.random.choice(replays, size=min(15, replays), replace=False)
+    sample_path_indices = rng.choice(replays, size=min(15, replays), replace=False)
     sample_paths = [[entry_price] for _ in range(len(sample_path_indices))]
     
+    norm_strat = normalize_strategy_key(strategy) if strategy else "atr_swing"
+    strat_alpha = STRATEGY_ALPHA_MAP.get(norm_strat, 0.0)
+
     for step in range(horizon_bars):
         slot = (entry_slot + step) % total_slots
         pool_arr = pools[slot]
         
-        sampled_indices = np.random.randint(0, len(pool_arr), size=replays)
+        sampled_indices = rng.integers(0, len(pool_arr), size=replays, dtype=np.int32)
         step_ratios = pool_arr[sampled_indices]
         
         o_ratio = step_ratios[:, 0]
         h_ratio = step_ratios[:, 1]
         l_ratio = step_ratios[:, 2]
         c_ratio = step_ratios[:, 3]
+
+        if strat_alpha != 0.0:
+            decay = max(0.1, 1.0 - step / horizon_bars)
+            drift = -strat_alpha * decay if side == "sell" else strat_alpha * decay
+            h_ratio = h_ratio + drift
+            l_ratio = l_ratio + drift
+            c_ratio = c_ratio + drift
         
         high_prices = market_prices * h_ratio
         low_prices = market_prices * l_ratio
@@ -314,17 +358,17 @@ def run_simulation(
                     hit_target = hit_target & (~hit_both)
                 elif tie_break == "random":
                     # 50/50 Bernoulli trial
-                    flips = np.random.rand(replays) < 0.5
+                    flips = rng.random(replays) < 0.5
                     hit_stop = (hit_stop & (~hit_both)) | (hit_both & flips)
                     hit_target = (hit_target & (~hit_both)) | (hit_both & (~flips))
                 else:  # "smart" (candle anatomy)
-                    is_bullish = c_ratio > o_ratio
-                    is_bearish = c_ratio < o_ratio
-                    doji_flips = np.random.rand(replays) < 0.5
+                    is_bullish = c_ratio[hit_both] > o_ratio[hit_both]
+                    is_bearish = c_ratio[hit_both] < o_ratio[hit_both]
+                    doji_flips = rng.random(np.count_nonzero(hit_both)) < 0.5
                     # Bullish candle dips to low first (SL hit first). Bearish rallies to high first (TP hit first).
                     sl_first = is_bullish | (doji_flips & (~is_bearish))
-                    hit_stop = (hit_stop & (~hit_both)) | (hit_both & sl_first)
-                    hit_target = (hit_target & (~hit_both)) | (hit_both & (~sl_first))
+                    hit_stop[hit_both] = sl_first
+                    hit_target[hit_both] = ~sl_first
         else:  # SELL
             hit_stop = ((high_prices + spread) >= stop_loss) & active
             hit_target = ((low_prices + spread) <= take_profit) & active
@@ -335,17 +379,17 @@ def run_simulation(
                     # Asli: Stop loss always wins
                     hit_target = hit_target & (~hit_both)
                 elif tie_break == "random":
-                    flips = np.random.rand(replays) < 0.5
+                    flips = rng.random(replays) < 0.5
                     hit_stop = (hit_stop & (~hit_both)) | (hit_both & flips)
                     hit_target = (hit_target & (~hit_both)) | (hit_both & (~flips))
                 else:  # "smart" (candle anatomy)
-                    is_bullish = c_ratio > o_ratio
-                    is_bearish = c_ratio < o_ratio
-                    doji_flips = np.random.rand(replays) < 0.5
+                    is_bullish = c_ratio[hit_both] > o_ratio[hit_both]
+                    is_bearish = c_ratio[hit_both] < o_ratio[hit_both]
+                    doji_flips = rng.random(np.count_nonzero(hit_both)) < 0.5
                     # Bearish candle rallies to high first (SL hit first). Bullish dips to low first (TP hit first).
                     sl_first = is_bearish | (doji_flips & (~is_bullish))
-                    hit_stop = (hit_stop & (~hit_both)) | (hit_both & sl_first)
-                    hit_target = (hit_target & (~hit_both)) | (hit_both & (~sl_first))
+                    hit_stop[hit_both] = sl_first
+                    hit_target[hit_both] = ~sl_first
                     
         # Update order outcomes
         if np.any(hit_stop):
@@ -381,7 +425,7 @@ def run_simulation(
         if step in step_indices or step == horizon_bars - 1:
             fan_data["step_bars"].append(step + 1)
             # Batch calculate percentiles to reduce overhead (Performance Optimization)
-            p_vals = np.percentile(chart_prices, [5, 25, 50, 75, 95])
+            p_vals = np.quantile(chart_prices, [0.05, 0.25, 0.50, 0.75, 0.95])
             fan_data["p5"].append(float(p_vals[0]))
             fan_data["p25"].append(float(p_vals[1]))
             fan_data["p50"].append(float(p_vals[2]))
@@ -478,8 +522,8 @@ def run_simulation(
             "breakeven_pct": round(breakeven_pct, 1),
             "avg_r": round(avg_r, 3),
             "median_terminal_price": round(float(np.median(exit_prices)), 2),
-            "p5_terminal": round(float(np.percentile(exit_prices, 5)), 2),
-            "p95_terminal": round(float(np.percentile(exit_prices, 95)), 2)
+            "p5_terminal": round(float(np.quantile(exit_prices, 0.05)), 2),
+            "p95_terminal": round(float(np.quantile(exit_prices, 0.95)), 2)
         },
         "verdict": verdict,
         "verdict_notes": notes,
