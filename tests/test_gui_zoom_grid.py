@@ -337,5 +337,45 @@ class GuiZoomAndGridTests(unittest.TestCase):
         self.assertIsNone(self.app._dragging_line)
 
 
+    def test_apply_strategy_to_manual_populates_distinct_levels(self):
+        """Verify that selecting different strategies in manual mode updates entry, SL, and TP distinctly."""
+        self.app.direction_var = tk.StringVar(value="BUY")
+        self.app.manual_entry_var = tk.StringVar(value="3875.00")
+        self.app.manual_stop_var = tk.StringVar(value="3850.00")
+        self.app.manual_target_var = tk.StringVar(value="3925.00")
+        self.app.point_size_var = tk.StringVar(value="0.01")
+        self.app.spread_var = tk.StringVar(value="0.24")
+        self.app.replays_var = tk.StringVar(value="50")
+        self.app.engine_mode_var = tk.StringVar(value="Legacy V1 (Default)")
+        self.app.horizon_var = tk.StringVar(value="12 Bars (1 Jam)")
+        self.app.manual_rr_lbl = tk.Label(self.root)
+        self.app.btn_run_manual = tk.Button(self.root)
+        self.app.m_verdict_lbl = tk.Label(self.root)
+        self.app.m_card_win = tk.Label(self.root)
+        self.app.m_card_loss = tk.Label(self.root)
+        self.app.m_card_open = tk.Label(self.root)
+        self.app.m_card_r = tk.Label(self.root)
+        self.app.manual_canvas = tk.Canvas(self.root)
+        self.app.bars_data = self.bars
+        self.app.current_projection_mode = "free_drift"
+        self.app.current_tie_break = "smart"
+        self.app.current_seasonality = False
+
+        self.app.strategy_var = tk.StringVar(value="Breakout + POC Retest")
+        self.app._apply_strategy_to_manual()
+        poc_entry = float(self.app.manual_entry_var.get())
+
+        self.app.strategy_var.set("Bollinger Extremes (Z-Score)")
+        self.app._apply_strategy_to_manual()
+        boll_entry = float(self.app.manual_entry_var.get())
+
+        self.app.strategy_var.set("Liquidity Sweep + FVG")
+        self.app._apply_strategy_to_manual()
+        fvg_entry = float(self.app.manual_entry_var.get())
+
+        self.assertNotEqual(poc_entry, boll_entry)
+        self.assertNotEqual(boll_entry, fvg_entry)
+
+
 if __name__ == "__main__":
     unittest.main()

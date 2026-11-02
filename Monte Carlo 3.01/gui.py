@@ -714,6 +714,13 @@ class TimeMachineProGUI:
             command=self.execute_manual_simulation
         ).pack(side=tk.LEFT, padx=6)
 
+        tk.Button(
+            m_ribbon, text="🔄 Muat Level Strategi", font=("Segoe UI", 8, "bold"),
+            bg=INPUT_BG, fg=GOLD, activebackground=PANEL_BG, activeforeground=GOLD,
+            relief=tk.FLAT, cursor="hand2", padx=8, pady=2,
+            command=self._apply_strategy_to_manual
+        ).pack(side=tk.LEFT, padx=4)
+
         # 4 Stat Cards in Row
         m_score_row = tk.Frame(self.manual_view_frame, bg=DARK_BG)
         m_score_row.pack(fill=tk.X, pady=(0, 6))
@@ -765,8 +772,8 @@ class TimeMachineProGUI:
         else:
             self.btn_mode_manual.configure(bg=GOLD, fg="#0b0f17")
             self.btn_mode_auto.configure(bg=INPUT_BG, fg=TEXT_MUTED)
-            if not self.manual_result and self.bars_data:
-                self.execute_manual_simulation()
+            if getattr(self, "bars_data", None):
+                self._apply_strategy_to_manual()
         self._update_view_visibility()
 
     def _update_view_visibility(self):
@@ -940,6 +947,42 @@ class TimeMachineProGUI:
             self.strategy_desc_label.configure(text=text)
         if self.active_mode == "auto":
             self.execute_auto_scan()
+        elif self.active_mode == "manual":
+            self._apply_strategy_to_manual()
+
+    def _apply_strategy_to_manual(self):
+        """Apply selected strategy's structure-based Entry, SL, and TP to manual simulation."""
+        if not getattr(self, "bars_data", None) or not self.bars_data.get("bars"):
+            return
+
+        side = self.direction_var.get().lower() if hasattr(self, "direction_var") else "buy"
+        strategy_code = {
+            "ATR Pullback & Swing (Default)": "atr_swing",
+            "Breakout + POC Retest": "poc",
+            "Liquidity Sweep + FVG": "fvg",
+            "Session ORB (Asia/London/NY)": "orb",
+            "Bollinger Extremes (Z-Score)": "zscore",
+            "Accumulation + Inverse FVG (IFVG)": "acc_ifvg",
+            "Liquidity Sweep + Shift Structure (SMS)": "sweep_sms",
+            "Liquidity Absorption + Volume Bubbles": "absorption",
+            "Order Flow Footprint Proxy": "footprint"
+        }.get(self.strategy_var.get(), "atr_swing")
+
+        try:
+            metrics = analyzer.calculate_market_metrics(self.bars_data["bars"], period=48)
+            pt_sz = float(self.point_size_var.get().strip()) if hasattr(self, "point_size_var") else 0.01
+            tpsl_cfg = analyzer._normalize_tpsl_config(mode="auto", bars_data=self.bars_data, point_size=pt_sz)
+            entries = analyzer._candidate_entries(side, metrics, self.bars_data["bars"], strategy=strategy_code)
+            if entries:
+                plans, _, _ = analyzer._build_candidate_plans(side, entries, metrics, self.bars_data.get("interval_minutes", 5), tpsl_cfg)
+                if plans:
+                    top_p = plans[0]
+                    self.manual_entry_var.set(f"{top_p['entry_price']:.2f}")
+                    self.manual_stop_var.set(f"{top_p['stop_loss']:.2f}")
+                    self.manual_target_var.set(f"{top_p['take_profit']:.2f}")
+                    self.execute_manual_simulation()
+        except Exception as e:
+            print("Error applying strategy to manual simulation:", e)
 
     def _on_tpsl_mode_change(self):
         self._render_tpsl_fields()
@@ -1188,7 +1231,7 @@ class TimeMachineProGUI:
 
     def _get_selected_horizon_bars(self):
         h_text = self.horizon_var.get()
-        interval = 1 if self.current_timeframe == "M1" else 5
+        interval = 1 if getattr(self, "current_timeframe", "M5") == "M1" else 5
         return timemachine.normalize_horizon_bars(h_text, interval_minutes=interval)
 
     def _on_horizon_change(self):
@@ -2049,7 +2092,10 @@ class TimeMachineProGUI:
         else:
             self.sell_btn.configure(bg=RED, fg="#ffffff")
             self.buy_btn.configure(bg=INPUT_BG, fg=TEXT_MUTED)
-        self._on_manual_price_change()
+        if getattr(self, "bars_data", None):
+            self._apply_strategy_to_manual()
+        else:
+            self._on_manual_price_change()
         if getattr(self, "manual_result", None) and getattr(self, "bars_data", None):
             self.execute_manual_simulation()
 
