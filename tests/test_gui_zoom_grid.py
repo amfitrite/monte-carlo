@@ -53,6 +53,8 @@ class GuiZoomAndGridTests(unittest.TestCase):
         self.app.sell_canvas = tk.Canvas(self.root, width=500, height=350, bg="#0f141d")
         self.app.manual_canvas = tk.Canvas(self.root, width=500, height=350, bg="#0f141d")
         self.app.dual_results = self.dual_res
+        self.app._dragging_line = None
+        self.app._hover_line = None
 
     def tearDown(self):
         try:
@@ -240,6 +242,99 @@ class GuiZoomAndGridTests(unittest.TestCase):
                 self.assertNotIn("Grid:", desc_base)
         finally:
             top.destroy()
+
+
+    def test_manual_line_hover_and_drag_interactions(self):
+        """Test hover detection and dragging for TP, SL, and Entry on manual canvas."""
+        self.app.manual_entry_var = tk.StringVar(value="3875.00")
+        self.app.manual_stop_var = tk.StringVar(value="3850.00")
+        self.app.manual_target_var = tk.StringVar(value="3925.00")
+        self.app.direction_var = tk.StringVar(value="BUY")
+        self.app.point_size_var = tk.StringVar(value="0.01")
+        self.app.manual_rr_lbl = tk.Label(self.root)
+
+        # Set cached dimensions for coordinate mapping
+        self.app._cached_pad_top = 25
+        self.app._cached_plot_h = 300
+        self.app._cached_min_p = 3800.0
+        self.app._cached_max_p = 4000.0
+        self.app._cached_pad_left = 60
+        self.app._cached_pad_right = 20
+
+        # Simulate line coordinates
+        self.app._cached_y_tp = 100
+        self.app._cached_y_en = 150
+        self.app._cached_y_sl = 200
+
+        class MockEvent:
+            def __init__(self, x, y, widget, state=0):
+                self.x = x
+                self.y = y
+                self.widget = widget
+                self.state = state
+
+        # 1. Hover near TP (y=100)
+        self.app._on_chart_mouse_motion(MockEvent(100, 102, self.app.manual_canvas))
+        self.assertEqual(self.app._hover_line, "tp")
+
+        # 2. Hover near SL (y=200)
+        self.app._on_chart_mouse_motion(MockEvent(100, 198, self.app.manual_canvas))
+        self.assertEqual(self.app._hover_line, "sl")
+
+        # 3. Hover near Entry (y=150)
+        self.app._on_chart_mouse_motion(MockEvent(100, 151, self.app.manual_canvas))
+        self.assertEqual(self.app._hover_line, "entry")
+
+        # 4. Click to start drag Entry
+        self.app._on_chart_pan_start(MockEvent(100, 150, self.app.manual_canvas))
+        self.assertEqual(self.app._dragging_line, "entry")
+        self.assertFalse(self.app._is_panning)
+
+        # 5. Drag Entry upwards (y moves from 150 to 120 -> price increases)
+        old_entry = float(self.app.manual_entry_var.get())
+        old_sl = float(self.app.manual_stop_var.get())
+        old_tp = float(self.app.manual_target_var.get())
+
+        self.app._on_chart_pan_motion(MockEvent(100, 120, self.app.manual_canvas))
+        new_entry = float(self.app.manual_entry_var.get())
+        new_sl = float(self.app.manual_stop_var.get())
+        new_tp = float(self.app.manual_target_var.get())
+
+        self.assertGreater(new_entry, old_entry)
+        self.assertAlmostEqual(new_sl - old_sl, new_entry - old_entry, places=1)
+        self.assertAlmostEqual(new_tp - old_tp, new_entry - old_entry, places=1)
+
+        # Release drag
+        self.app._on_chart_pan_end(MockEvent(100, 120, self.app.manual_canvas))
+        self.assertIsNone(self.app._dragging_line)
+
+        # 6. Drag TP line independently
+        self.app._hover_line = "tp"
+        self.app._on_chart_pan_start(MockEvent(100, 100, self.app.manual_canvas))
+        self.assertEqual(self.app._dragging_line, "tp")
+
+        # Drag TP further up (y=80)
+        self.app._on_chart_pan_motion(MockEvent(100, 80, self.app.manual_canvas))
+        self.assertGreater(float(self.app.manual_target_var.get()), new_entry)
+
+        # Drag TP below entry -> should be clamped above entry for BUY
+        self.app._on_chart_pan_motion(MockEvent(100, 250, self.app.manual_canvas))
+        self.assertGreater(float(self.app.manual_target_var.get()), float(self.app.manual_entry_var.get()))
+
+        self.app._on_chart_pan_end(MockEvent(100, 250, self.app.manual_canvas))
+        self.assertIsNone(self.app._dragging_line)
+
+        # 7. Drag SL line independently
+        self.app._hover_line = "sl"
+        self.app._on_chart_pan_start(MockEvent(100, 200, self.app.manual_canvas))
+        self.assertEqual(self.app._dragging_line, "sl")
+
+        # Drag SL above entry -> should be clamped below entry for BUY
+        self.app._on_chart_pan_motion(MockEvent(100, 50, self.app.manual_canvas))
+        self.assertLess(float(self.app.manual_stop_var.get()), float(self.app.manual_entry_var.get()))
+
+        self.app._on_chart_pan_end(MockEvent(100, 50, self.app.manual_canvas))
+        self.assertIsNone(self.app._dragging_line)
 
 
 if __name__ == "__main__":

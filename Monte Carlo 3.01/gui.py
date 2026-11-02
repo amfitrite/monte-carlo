@@ -129,6 +129,27 @@ class TimeMachineProGUI:
         self._cached_base_range = 80.0
         self._cached_orig_mid = 3875.0
         self._cached_total_steps = 72
+
+        # Interactive Manual Line Dragging states
+        self._dragging_line = None  # None, "entry", "sl", or "tp"
+        self._hover_line = None  # None, "entry", "sl", or "tp"
+        self._drag_start_y = 0
+        self._drag_orig_entry = 0.0
+        self._drag_orig_stop = 0.0
+        self._drag_orig_target = 0.0
+        self._cached_y_tp = None
+        self._cached_y_sl = None
+        self._cached_y_en = None
+        self._cached_pad_top = 25
+        self._cached_pad_bottom = 35
+        self._cached_pad_left = 60
+        self._cached_pad_right = 20
+        self._cached_min_p = 0.0
+        self._cached_max_p = 1.0
+        self._cached_base_min_p = 0.0
+        self._cached_base_max_p = 1.0
+        self._cached_drag_min_p = None
+        self._cached_drag_max_p = None
         self._cached_plot_w = 400
         self._cached_plot_h = 300
         self._cached_vis_price_range = 80.0
@@ -744,6 +765,8 @@ class TimeMachineProGUI:
         else:
             self.btn_mode_manual.configure(bg=GOLD, fg="#0b0f17")
             self.btn_mode_auto.configure(bg=INPUT_BG, fg=TEXT_MUTED)
+            if not self.manual_result and self.bars_data:
+                self.execute_manual_simulation()
         self._update_view_visibility()
 
     def _update_view_visibility(self):
@@ -1349,6 +1372,8 @@ class TimeMachineProGUI:
         canvas.bind("<B1-Motion>", self._on_chart_pan_motion)
         canvas.bind("<ButtonRelease-1>", self._on_chart_pan_end)
         canvas.bind("<Double-Button-1>", self._reset_chart_zoom)
+        canvas.bind("<Motion>", self._on_chart_mouse_motion)
+        canvas.bind("<Leave>", self._on_chart_mouse_leave)
 
     def _on_chart_mousewheel_linux(self, event, direction):
         event.delta = 120 * direction
@@ -1413,6 +1438,25 @@ class TimeMachineProGUI:
         self._redraw_active_charts()
 
     def _on_chart_pan_start(self, event):
+        if event.widget == getattr(self, "manual_canvas", None) and getattr(self, "_hover_line", None) is not None:
+            self._dragging_line = self._hover_line
+            self._is_panning = False
+            self._drag_start_y = event.y
+            try:
+                self._drag_orig_entry = float(self.manual_entry_var.get())
+                self._drag_orig_stop = float(self.manual_stop_var.get())
+                self._drag_orig_target = float(self.manual_target_var.get())
+            except Exception:
+                pass
+            self._cached_drag_min_p = getattr(self, "_cached_base_min_p", None)
+            self._cached_drag_max_p = getattr(self, "_cached_base_max_p", None)
+            try:
+                event.widget.configure(cursor="sb_v_double_arrow")
+            except Exception:
+                pass
+            return
+
+        self._dragging_line = None
         self._pan_start_x = event.x
         self._pan_start_y = event.y
         self._is_panning = True
@@ -1422,6 +1466,10 @@ class TimeMachineProGUI:
             pass
 
     def _on_chart_pan_motion(self, event):
+        if getattr(self, "_dragging_line", None) is not None:
+            self._handle_manual_line_drag(event)
+            return
+
         if not getattr(self, "_is_panning", False):
             return
         dx = event.x - self._pan_start_x
@@ -1440,11 +1488,181 @@ class TimeMachineProGUI:
         self._redraw_active_charts()
 
     def _on_chart_pan_end(self, event):
+        if getattr(self, "_dragging_line", None) is not None:
+            self._dragging_line = None
+            self._cached_drag_min_p = None
+            self._cached_drag_max_p = None
+            try:
+                event.widget.configure(cursor="")
+            except Exception:
+                pass
+            # Trigger real-time simulation on release
+            if getattr(self, "bars_data", None) and getattr(self, "active_mode", None) == "manual":
+                self.execute_manual_simulation()
+            return
+
         self._is_panning = False
         try:
             event.widget.configure(cursor="")
         except Exception:
             pass
+
+    def _on_chart_mouse_motion(self, event):
+        """Track hover over draggable lines (TP, SL, Entry) in manual simulation canvas."""
+        if event.widget != getattr(self, "manual_canvas", None):
+            return
+        if getattr(self, "_dragging_line", None) is not None:
+            return  # currently dragging, maintain drag cursor
+
+        pad_left = getattr(self, "_cached_pad_left", 60)
+        pad_right = getattr(self, "_cached_pad_right", 20)
+        w = event.widget.winfo_width() if event.widget.winfo_width() >= 50 else (getattr(self, "_cached_plot_w", 400) + pad_left + pad_right)
+
+        # Only activate hover inside chart area
+        if event.x < pad_left - 15 or event.x > w - pad_right + 15:
+            if getattr(self, "_hover_line", None) is not None:
+                self._hover_line = None
+                self._draw_manual_chart()
+                try:
+                    event.widget.configure(cursor="")
+                except Exception:
+                    pass
+            return
+
+        y_tp = getattr(self, "_cached_y_tp", None)
+        y_sl = getattr(self, "_cached_y_sl", None)
+        y_en = getattr(self, "_cached_y_en", None)
+
+        d_tp = abs(event.y - y_tp) if y_tp is not None else 999.0
+        d_sl = abs(event.y - y_sl) if y_sl is not None else 999.0
+        d_en = abs(event.y - y_en) if y_en is not None else 999.0
+
+        min_d = min(d_tp, d_sl, d_en)
+        if min_d <= 8:
+            if min_d == d_tp:
+                new_hover = "tp"
+            elif min_d == d_sl:
+                new_hover = "sl"
+            else:
+                new_hover = "entry"
+
+            if getattr(self, "_hover_line", None) != new_hover:
+                self._hover_line = new_hover
+                self._draw_manual_chart()
+            try:
+                event.widget.configure(cursor="sb_v_double_arrow")
+            except Exception:
+                pass
+        else:
+            if getattr(self, "_hover_line", None) is not None:
+                self._hover_line = None
+                self._draw_manual_chart()
+            try:
+                event.widget.configure(cursor="")
+            except Exception:
+                pass
+
+    def _on_chart_mouse_leave(self, event):
+        if getattr(self, "_dragging_line", None) is None:
+            if getattr(self, "_hover_line", None) is not None:
+                self._hover_line = None
+                if event.widget == getattr(self, "manual_canvas", None):
+                    self._draw_manual_chart()
+            try:
+                event.widget.configure(cursor="")
+            except Exception:
+                pass
+
+    def _handle_manual_line_drag(self, event):
+        line_type = self._dragging_line
+        if not line_type:
+            return
+
+        plot_h = getattr(self, "_cached_plot_h", 0)
+        pad_top = getattr(self, "_cached_pad_top", 25)
+        min_p = getattr(self, "_cached_min_p", 0.0)
+        max_p = getattr(self, "_cached_max_p", 1.0)
+        if plot_h <= 0 or max_p <= min_p:
+            return
+
+        y_clamped = max(pad_top + 2, min(pad_top + plot_h - 2, event.y))
+        norm_y = 1.0 - (y_clamped - pad_top) / float(plot_h)
+        raw_price = min_p + norm_y * (max_p - min_p)
+
+        try:
+            pt_sz = float(self.point_size_var.get().strip())
+            if pt_sz <= 0:
+                pt_sz = 0.01
+        except Exception:
+            pt_sz = 0.01
+
+        decimals = 2
+        if pt_sz < 0.001:
+            decimals = 4
+        elif pt_sz >= 1.0:
+            decimals = 0
+
+        new_price = round(round(raw_price / pt_sz) * pt_sz, decimals)
+
+        is_buy = (self.direction_var.get() == "BUY")
+        try:
+            cur_entry = float(self.manual_entry_var.get())
+            cur_stop = float(self.manual_stop_var.get())
+            cur_target = float(self.manual_target_var.get())
+        except Exception:
+            cur_entry = self._drag_orig_entry
+            cur_stop = self._drag_orig_stop
+            cur_target = self._drag_orig_target
+
+        min_buf = max(pt_sz * 5, 0.5)
+
+        if line_type == "entry":
+            shift_pressed = bool(getattr(event, "state", 0) & 0x0001)
+            delta = new_price - cur_entry
+            new_entry = new_price
+            if shift_pressed:
+                if is_buy:
+                    new_entry = max(cur_stop + min_buf, min(cur_target - min_buf, new_entry))
+                else:
+                    new_entry = min(cur_stop - min_buf, max(cur_target + min_buf, new_entry))
+                self.manual_entry_var.set(f"{new_entry:.{decimals}f}")
+            else:
+                new_stop = round(cur_stop + delta, decimals)
+                new_target = round(cur_target + delta, decimals)
+                self.manual_entry_var.set(f"{new_entry:.{decimals}f}")
+                self.manual_stop_var.set(f"{new_stop:.{decimals}f}")
+                self.manual_target_var.set(f"{new_target:.{decimals}f}")
+
+        elif line_type == "tp":
+            if is_buy:
+                new_price = max(cur_entry + min_buf, new_price)
+            else:
+                new_price = min(cur_entry - min_buf, new_price)
+            self.manual_target_var.set(f"{new_price:.{decimals}f}")
+
+        elif line_type == "sl":
+            if is_buy:
+                new_price = min(cur_entry - min_buf, new_price)
+            else:
+                new_price = max(cur_entry + min_buf, new_price)
+            self.manual_stop_var.set(f"{new_price:.{decimals}f}")
+
+        if getattr(self, "manual_result", None) and "plan" in self.manual_result:
+            p = self.manual_result["plan"]
+            try:
+                e_val = float(self.manual_entry_var.get())
+                s_val = float(self.manual_stop_var.get())
+                t_val = float(self.manual_target_var.get())
+                p["entry"] = e_val
+                p["stop"] = s_val
+                p["target"] = t_val
+                risk = abs(e_val - s_val)
+                reward = abs(t_val - e_val)
+                p["target_r"] = reward / risk if risk > 0 else 0.0
+            except Exception:
+                pass
+
+        self._draw_manual_chart()
 
     def _reset_chart_zoom(self, event=None):
         """Reset chart zoom and pan to 100% auto-fit."""
@@ -1546,22 +1764,32 @@ class TimeMachineProGUI:
         stop = plan["stop"]
         target = plan["target"]
 
-        if price_bounds:
+        is_manual = (canvas == getattr(self, "manual_canvas", None))
+        if is_manual and getattr(self, "_dragging_line", None) is not None and getattr(self, "_cached_drag_min_p", None) is not None:
+            base_min_p = self._cached_drag_min_p
+            base_max_p = self._cached_drag_max_p
+        elif price_bounds:
             base_min_p, base_max_p = price_bounds
         else:
             all_vals = p5 + p95 + [entry, stop, target]
             base_min_p = min(all_vals)
             base_max_p = max(all_vals)
+            margin = max(1.0, (base_max_p - base_min_p) * 0.08)
+            base_min_p -= margin
+            base_max_p += margin
 
-        margin = max(1.0, (base_max_p - base_min_p) * 0.08)
-        base_min_p -= margin
-        base_max_p += margin
         base_range = max(0.01, base_max_p - base_min_p)
         orig_mid = 0.5 * (base_min_p + base_max_p)
 
-        # Store cache for zoom/pan calculations
+        # Store cache for zoom/pan and drag calculations
         self._cached_base_range = base_range
         self._cached_orig_mid = orig_mid
+        self._cached_base_min_p = base_min_p
+        self._cached_base_max_p = base_max_p
+        self._cached_pad_top = pad_top
+        self._cached_pad_bottom = pad_bottom
+        self._cached_pad_left = pad_left
+        self._cached_pad_right = pad_right
         total_steps = float(steps[-1]) if steps[-1] > 0 else 1.0
         self._cached_total_steps = total_steps
         self._cached_plot_w = plot_w
@@ -1575,6 +1803,8 @@ class TimeMachineProGUI:
         cur_mid = orig_mid + pan_y
         min_p = cur_mid - 0.5 * vis_price_range
         max_p = cur_mid + 0.5 * vis_price_range
+        self._cached_min_p = min_p
+        self._cached_max_p = max_p
 
         # Apply zoom_x and pan_x
         zoom_x = getattr(self, "zoom_x", 1.0)
@@ -1694,34 +1924,97 @@ class TimeMachineProGUI:
                 canvas.create_text(x_px, h - pad_bottom + 12, text=t_lbl, fill=TEXT_MUTED, font=("Segoe UI", 8))
 
         # 8. Target, Stop, Entry lines & off-screen markers
-        # Jika TP/SL didisable (atau target/stop bernilai None / sama dengan entry), jangan gambar garis TP/SL
+        # Manual mode always displays draggable lines; auto mode follows enable_tpsl_var
         has_tpsl = getattr(self, "enable_tpsl_var", None) and self.enable_tpsl_var.get()
-        if target is not None and stop is not None and has_tpsl:
+        if is_manual:
+            self._cached_y_tp = None
+            self._cached_y_sl = None
+            self._cached_y_en = None
+
+        if target is not None and stop is not None and (has_tpsl or is_manual):
             y_tp = to_y(target)
+            if is_manual and (pad_top - 10 <= y_tp <= h - pad_bottom + 10):
+                self._cached_y_tp = y_tp
+            is_tp_hover = is_manual and (getattr(self, "_hover_line", None) == "tp" or getattr(self, "_dragging_line", None) == "tp")
+            tp_width = 3 if is_tp_hover else 2
+            tp_color = "#34d399" if is_tp_hover else GREEN
+
             if pad_top <= y_tp <= h - pad_bottom:
-                canvas.create_line(pad_left, y_tp, w - pad_right, y_tp, fill=GREEN, width=2, dash=(6, 4))
-                canvas.create_text(w - pad_right - 6, y_tp - 10, text=f"TP ${target:.2f} (+{plan.get('target_r', 0.0):.2f}R)", fill=GREEN, font=("Segoe UI", 9, "bold"), anchor="e")
+                canvas.create_line(pad_left, y_tp, w - pad_right, y_tp, fill=tp_color, width=tp_width, dash=(6, 4))
+                if is_manual:
+                    badge_text = f" ⇅ TP ${target:.2f} (+{plan.get('target_r', 0.0):.2f}R) "
+                    tw = len(badge_text) * 7.2
+                    bx2 = w - pad_right - 6
+                    bx1 = bx2 - tw
+                    by1 = y_tp - 18
+                    by2 = y_tp + 2
+                    bg_col = "#047857" if is_tp_hover else "#064e3b"
+                    canvas.create_rectangle(bx1, by1, bx2, by2, fill=bg_col, outline=tp_color, width=1)
+                    canvas.create_text((bx1 + bx2) / 2, (by1 + by2) / 2, text=badge_text, fill=tp_color, font=("Segoe UI", 8, "bold"))
+                else:
+                    canvas.create_text(w - pad_right - 6, y_tp - 10, text=f"TP ${target:.2f} (+{plan.get('target_r', 0.0):.2f}R)", fill=GREEN, font=("Segoe UI", 9, "bold"), anchor="e")
             elif y_tp < pad_top:
                 canvas.create_text(w - pad_right - 6, pad_top + 12, text=f"▲ TP ${target:.2f} (+{plan.get('target_r', 0.0):.1f}R)", fill=GREEN, font=("Segoe UI", 8, "bold"), anchor="e")
             elif y_tp > h - pad_bottom:
                 canvas.create_text(w - pad_right - 6, h - pad_bottom - 12, text=f"▼ TP ${target:.2f} (+{plan.get('target_r', 0.0):.1f}R)", fill=GREEN, font=("Segoe UI", 8, "bold"), anchor="e")
 
             y_sl = to_y(stop)
+            if is_manual and (pad_top - 10 <= y_sl <= h - pad_bottom + 10):
+                self._cached_y_sl = y_sl
+            is_sl_hover = is_manual and (getattr(self, "_hover_line", None) == "sl" or getattr(self, "_dragging_line", None) == "sl")
+            sl_width = 3 if is_sl_hover else 2
+            sl_color = "#f87171" if is_sl_hover else RED
+
             if pad_top <= y_sl <= h - pad_bottom:
-                canvas.create_line(pad_left, y_sl, w - pad_right, y_sl, fill=RED, width=2, dash=(6, 4))
-                canvas.create_text(w - pad_right - 6, y_sl + 10, text=f"SL ${stop:.2f} (-1.0R)", fill=RED, font=("Segoe UI", 9, "bold"), anchor="e")
+                canvas.create_line(pad_left, y_sl, w - pad_right, y_sl, fill=sl_color, width=sl_width, dash=(6, 4))
+                if is_manual:
+                    badge_text = f" ⇅ SL ${stop:.2f} (-1.0R) "
+                    tw = len(badge_text) * 7.2
+                    bx2 = w - pad_right - 6
+                    bx1 = bx2 - tw
+                    by1 = y_sl - 2
+                    by2 = y_sl + 18
+                    bg_col = "#7f1d1d" if is_sl_hover else "#450a0a"
+                    canvas.create_rectangle(bx1, by1, bx2, by2, fill=bg_col, outline=sl_color, width=1)
+                    canvas.create_text((bx1 + bx2) / 2, (by1 + by2) / 2, text=badge_text, fill=sl_color, font=("Segoe UI", 8, "bold"))
+                else:
+                    canvas.create_text(w - pad_right - 6, y_sl + 10, text=f"SL ${stop:.2f} (-1.0R)", fill=RED, font=("Segoe UI", 9, "bold"), anchor="e")
             elif y_sl < pad_top:
                 canvas.create_text(w - pad_right - 6, pad_top + 24, text=f"▲ SL ${stop:.2f} (-1.0R)", fill=RED, font=("Segoe UI", 8, "bold"), anchor="e")
             elif y_sl > h - pad_bottom:
                 canvas.create_text(w - pad_right - 6, h - pad_bottom - 24, text=f"▼ SL ${stop:.2f} (-1.0R)", fill=RED, font=("Segoe UI", 8, "bold"), anchor="e")
 
         y_en = to_y(entry)
+        if is_manual and (pad_top - 10 <= y_en <= h - pad_bottom + 10):
+            self._cached_y_en = y_en
+        is_en_hover = is_manual and (getattr(self, "_hover_line", None) == "entry" or getattr(self, "_dragging_line", None) == "entry")
+        en_width = 3 if is_en_hover else 1
+        en_color = "#facc15" if is_en_hover else "#ffffff"
+
         has_limits = getattr(self, "enable_limits_var", None) and self.enable_limits_var.get()
-        limit_lbl = ("Buy Limit" if is_buy else "Sell Limit") if has_limits else ("BUY SIGNAL" if is_buy else "SELL SIGNAL")
+        limit_lbl = ("Buy Limit" if is_buy else "Sell Limit") if (has_limits or is_manual) else ("BUY SIGNAL" if is_buy else "SELL SIGNAL")
         tag_str = f" [{plan['setup_tag']}]" if plan.get("setup_tag") else ""
         if pad_top <= y_en <= h - pad_bottom:
-            canvas.create_line(pad_left, y_en, w - pad_right, y_en, fill="#ffffff", width=1, dash=(3, 3))
-            canvas.create_text(pad_left + 8, y_en - 8, text=f"{limit_lbl}{tag_str} ${entry:.2f}", fill="#ffffff", font=("Segoe UI", 8, "bold"), anchor="w")
+            canvas.create_line(pad_left, y_en, w - pad_right, y_en, fill=en_color, width=en_width, dash=(3, 3))
+            if is_manual:
+                badge_text = f" ⇅ {limit_lbl} ${entry:.2f} "
+                tw = len(badge_text) * 7.2
+                bx1 = pad_left + 8
+                bx2 = bx1 + tw
+                by1 = y_en - 18
+                by2 = y_en + 2
+                bg_col = "#334155" if is_en_hover else "#1e293b"
+                canvas.create_rectangle(bx1, by1, bx2, by2, fill=bg_col, outline=en_color, width=1)
+                canvas.create_text((bx1 + bx2) / 2, (by1 + by2) / 2, text=badge_text, fill=en_color, font=("Segoe UI", 8, "bold"))
+            else:
+                canvas.create_text(pad_left + 8, y_en - 8, text=f"{limit_lbl}{tag_str} ${entry:.2f}", fill="#ffffff", font=("Segoe UI", 8, "bold"), anchor="w")
+
+        if is_manual:
+            canvas.create_text(
+                w - pad_right - 8, pad_top + 10,
+                text="💡 Geser garis Entry, SL, atau TP untuk simulasi instan (Shift: Entry saja)",
+                fill="#64748b", font=("Segoe UI", 8), anchor="e"
+            )
 
         # 9. Methodology Badge
         proj_mode = meta.get("projection_mode", "free_drift")
@@ -1757,6 +2050,8 @@ class TimeMachineProGUI:
             self.sell_btn.configure(bg=RED, fg="#ffffff")
             self.buy_btn.configure(bg=INPUT_BG, fg=TEXT_MUTED)
         self._on_manual_price_change()
+        if getattr(self, "manual_result", None) and getattr(self, "bars_data", None):
+            self.execute_manual_simulation()
 
     def _on_manual_price_change(self, *args):
         try:
@@ -1839,7 +2134,7 @@ class TimeMachineProGUI:
     def _draw_manual_chart(self):
         c = self.manual_canvas
         c.delete("all")
-        if not self.manual_result:
+        if not getattr(self, "manual_result", None):
             w = c.winfo_width()
             h = c.winfo_height()
             c.create_text(w / 2, h / 2, text="Run simulation to visualize probability paths", fill=TEXT_MUTED, font=("Segoe UI", 11))
