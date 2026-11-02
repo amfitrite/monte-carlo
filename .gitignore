@@ -12,8 +12,13 @@ venv/
 env/
 .env
 
-# Backups
+# Backups & Old Versions (Local only, not pushed to GitHub)
 old version/
+Monte Carlo 1*/
+Monte Carlo 2*/
+
+# Pine Script (Local only, not pushed to GitHub)
+*.pine
 
 # Editor files
 .vscode/
