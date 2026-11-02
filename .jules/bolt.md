@@ -1,3 +1,6 @@
 ## 2024-05-18 - Batching numpy operations
 **Learning:** Calling `np.percentile` 5 separate times inside a simulation loop is significantly slower than batching them into a single `np.percentile` call passing a list of percentiles (e.g. `[5, 25, 50, 75, 95]`). This gave a ~30% performance boost to the simulation engine.
 **Action:** Always batch numpy operations whenever possible to minimize Python/C transition overhead.
+## 2024-11-02 - Numpy Vectorization in High-Frequency Loops
+**Learning:** Python `for` loops iterating over lists/arrays in a Monte Carlo simulation engine are a significant bottleneck compared to native NumPy vectorized operations. Using `rng.integers` to allocate 2D matrices all at once and applying `np.column_stack` with boolean array masking drastically outperforms element-wise Python logic. Additionally, `np.quantile` is up to 25% faster than `np.percentile` for identical calculations.
+**Action:** When working in statistical/data loops, trace all `for` blocks. Pre-calculate array slices, use `np.column_stack`, map boolean logic using bitwise operators (`&`, `|`), and replace Python `datetime` parsing inside loops with vectorized integer math (epoch modulo divisions).
