@@ -1087,3 +1087,197 @@ def evaluate_combination_monte_carlo(
         summary["results"].append(cfg_summary)
 
     return summary
+# ---------------------------------------------------------------------------
+# FASE 1: PURE STATISTICAL EDGE & FORWARD MOVEMENT EVALUATOR
+# ---------------------------------------------------------------------------
+
+def evaluate_combination_forward_edge(
+    strategy_key, bars_data, side="both", horizons=[3, 6, 12, 24, 48],
+    price_step=0.01, seed=42
+):
+    """
+    FASE 1 EVALUATOR — SEKARANG:
+    Murni menilai keunggulan statistik sinyal entri tanpa aturan keluar buatan.
+    
+    TIDAK menggunakan TP/SL sintetis atau artificial limits.
+    Semua metrik forward movement diukur strictly post-candle close (t+1 s/d t+H)
+    tanpa look-ahead bias:
+    
+    1. Signal frequency (N): Seberapa sering setup muncul.
+    2. Forward Return (pts & ATR-normalized): Return pada t+H.
+    3. MFE (Maximum Favorable Excursion): Jarak terjauh harga menguntungkan sinyal.
+    4. MAE (Maximum Adverse Excursion): Jarak terjauh harga melawan sinyal.
+    5. Edge Ratio: MFE / MAE (> 1.0 = positive drift bias).
+    6. Directional Accuracy (%): Persentase kejadian di mana Forward Return > 0.
+    7. 95% Confidence Interval Forward Return: Menilai kepastian statistik keunggulan.
+    8. Period Stability: Konsistensi return antara paruh pertama vs paruh kedua data.
+    """
+    bars = bars_data.get("bars", []) if isinstance(bars_data, dict) else bars_data
+    if len(bars) < 50:
+        raise ValueError("Combination Engine requires at least 50 historical OHLC bars.")
+
+    price_step = float(price_step or bars_data.get("point_size", 0.01) or 0.01)
+    grid_results = run_combination_grid(
+        strategy_key, bars_data, price_step=price_step,
+        enable_tpsl=False, enable_limits=False
+    )
+
+    n_bars = len(bars)
+    highs = np.array([float(b["high"]) for b in bars], dtype=np.float64)
+    lows = np.array([float(b["low"]) for b in bars], dtype=np.float64)
+    closes = np.array([float(b["close"]) for b in bars], dtype=np.float64)
+
+    feats = extract_candle_features(bars)
+    atrs = feats.get("atr", np.ones(n_bars, dtype=np.float64))
+
+    summary = {
+        "phase": "FASE 1 (Pure Signal & Forward Edge Validation)",
+        "strategy_key": strategy_key,
+        "strategy_name": grid_results["strategy_name"],
+        "horizons": horizons,
+        "price_step": price_step,
+        "results": []
+    }
+
+    primary_h = horizons[min(2, len(horizons) - 1)]  # Default horizon perbandingan (misal 12 bar)
+    sides_to_eval = ["buy", "sell"] if side == "both" else [side.lower()]
+
+    for cfg_dict in grid_results["grid"]:
+        cid = cfg_dict["config_id"]
+        plans_data = grid_results["plans_by_id"][cid]
+
+        cfg_summary = {
+            "config_id": cid,
+            "params": cfg_dict,
+            "buy": None,
+            "sell": None
+        }
+
+        for s in sides_to_eval:
+            candidate_list = plans_data.get(s, [])
+            n_signals = len(candidate_list)
+            if n_signals == 0:
+                cfg_summary[s] = {
+                    "signals": 0, "frequency_per_1000": 0.0,
+                    "avg_forward_return": 0.0, "return_ci_95": [0.0, 0.0],
+                    "directional_accuracy_pct": 0.0,
+                    "avg_mfe": 0.0, "avg_mae": 0.0, "edge_ratio": 0.0,
+                    "stability_score": 0.0, "horizon_details": {}
+                }
+                continue
+
+            # Hitung forward excursion untuk setiap horizon H
+            # Hanya sinyal dengan waktu observasi lengkap (bar_idx + max(horizons) < n_bars)
+            max_h = max(horizons)
+            valid_signals = [p for p in candidate_list if p["bar_index"] + max_h < n_bars]
+
+            if not valid_signals:
+                valid_signals = [p for p in candidate_list if p["bar_index"] + primary_h < n_bars]
+
+            if not valid_signals:
+                cfg_summary[s] = {
+                    "signals": n_signals, "frequency_per_1000": round((n_signals / n_bars) * 1000.0, 1),
+                    "avg_forward_return": 0.0, "return_ci_95": [0.0, 0.0],
+                    "directional_accuracy_pct": 0.0,
+                    "avg_mfe": 0.0, "avg_mae": 0.0, "edge_ratio": 0.0,
+                    "stability_score": 0.0, "horizon_details": {}
+                }
+                continue
+
+            horizon_stats = {}
+            for h in horizons:
+                fwd_returns = []
+                mfes = []
+                maes = []
+
+                for p in valid_signals:
+                    t = p["bar_index"]
+                    if t + h >= n_bars:
+                        continue
+                    entry_p = closes[t]
+                    c_atr = max(atrs[t], 0.01)
+
+                    fwd_slice_h = highs[t + 1:t + h + 1]
+                    fwd_slice_l = lows[t + 1:t + h + 1]
+                    fwd_terminal_c = closes[t + h]
+
+                    if s == "buy":
+                        ret = fwd_terminal_c - entry_p
+                        mfe = np.max(fwd_slice_h) - entry_p
+                        mae = entry_p - np.min(fwd_slice_l)
+                    else:
+                        ret = entry_p - fwd_terminal_c
+                        mfe = entry_p - np.min(fwd_slice_l)
+                        mae = np.max(fwd_slice_h) - entry_p
+
+                    fwd_returns.append(ret / c_atr)  # Normalized by ATR
+                    mfes.append(mfe / c_atr)
+                    maes.append(mae / c_atr)
+
+                if fwd_returns:
+                    arr_ret = np.array(fwd_returns)
+                    arr_mfe = np.array(mfes)
+                    arr_mae = np.array(maes)
+                    mean_ret = float(np.mean(arr_ret))
+                    mean_mfe = float(np.mean(arr_mfe))
+                    mean_mae = float(np.mean(arr_mae))
+                    acc = float(np.mean(arr_ret > 0)) * 100.0
+                    edge_r = (mean_mfe / mean_mae) if mean_mae > 1e-4 else (2.0 if mean_mfe > 0 else 1.0)
+                    horizon_stats[h] = {
+                        "mean_return_atr": round(mean_ret, 3),
+                        "mean_mfe_atr": round(mean_mfe, 3),
+                        "mean_mae_atr": round(mean_mae, 3),
+                        "edge_ratio": round(edge_r, 2),
+                        "accuracy_pct": round(acc, 1)
+                    }
+
+            # Ambil metrik ringkasan pada primary horizon
+            prim_data = horizon_stats.get(primary_h, list(horizon_stats.values())[-1] if horizon_stats else {})
+
+            # 95% Confidence Interval via Bootstrap
+            all_prim_rets = []
+            for p in valid_signals:
+                t = p["bar_index"]
+                if t + primary_h < n_bars:
+                    c_atr = max(atrs[t], 0.01)
+                    ret = (closes[t + primary_h] - closes[t]) if s == "buy" else (closes[t] - closes[t + primary_h])
+                    all_prim_rets.append(ret / c_atr)
+
+            if len(all_prim_rets) >= 5:
+                rng = np.random.default_rng(seed)
+                boot_means = [np.mean(rng.choice(all_prim_rets, size=len(all_prim_rets), replace=True)) for _ in range(500)]
+                ci_low = round(float(np.percentile(boot_means, 2.5)), 3)
+                ci_high = round(float(np.percentile(boot_means, 97.5)), 3)
+            else:
+                ci_low, ci_high = 0.0, 0.0
+
+            # Period Stability: Bandingkan return separuh pertama vs separuh kedua data
+            if len(all_prim_rets) >= 6:
+                mid_idx = len(all_prim_rets) // 2
+                ret_h1 = np.mean(all_prim_rets[:mid_idx])
+                ret_h2 = np.mean(all_prim_rets[mid_idx:])
+                # Stability score: 1.0 jika kedua separuh positif atau bertanda sama, turun jika berlawanan
+                if (ret_h1 > 0 and ret_h2 > 0) or (ret_h1 < 0 and ret_h2 < 0):
+                    stab_score = round(min(ret_h1, ret_h2) / max(ret_h1, ret_h2), 2) if max(ret_h1, ret_h2) != 0 else 0.5
+                    stab_score = max(0.1, min(1.0, stab_score))
+                else:
+                    stab_score = 0.0  # Tidak stabil (satu separuh untung, satu buntung)
+            else:
+                stab_score = 0.5
+
+            cfg_summary[s] = {
+                "signals": n_signals,
+                "frequency_per_1000": round((n_signals / n_bars) * 1000.0, 1),
+                "avg_forward_return": prim_data.get("mean_return_atr", 0.0),
+                "return_ci_95": [ci_low, ci_high],
+                "directional_accuracy_pct": prim_data.get("accuracy_pct", 0.0),
+                "avg_mfe": prim_data.get("mean_mfe_atr", 0.0),
+                "avg_mae": prim_data.get("mean_mae_atr", 0.0),
+                "edge_ratio": prim_data.get("edge_ratio", 0.0),
+                "stability_score": stab_score,
+                "horizon_details": horizon_stats
+            }
+
+        summary["results"].append(cfg_summary)
+
+    return summary

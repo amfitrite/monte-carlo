@@ -1860,33 +1860,38 @@ class TimeMachineProGUI:
         ).pack(side=tk.RIGHT)
 
     def _open_combination_matrix_modal(self):
-        """Displays full 5x4 (20 Configurations) Sensitivity Matrix with Expectancy, Winrate, Fill Rate, and Tail Risk."""
+        """Displays FASE 1: Pure Statistical Alpha & Forward Edge Profiler (MFE, MAE, Edge Ratio, Directional Accuracy)."""
         modal = tk.Toplevel(self.root)
-        modal.title("20-Combination Sensitivity Matrix (Monte Carlo V2.01)")
-        modal.geometry("980x620")
+        modal.title("FASE 1: Combination Engine - Pure Forward Edge & Alpha Profiler")
+        modal.geometry("1060x640")
         modal.configure(bg=DARK_BG)
         modal.transient(self.root)
 
         header = tk.Frame(modal, bg=PANEL_BG, padx=14, pady=10)
         header.pack(fill=tk.X)
         tk.Label(
-            header, text="🧮 20-COMBINATION SENSITIVITY MATRIX & MONTE CARLO EVALUATOR",
+            header, text="🔬 FASE 1: PURE ENTRY ALPHA & FORWARD EDGE PROFILER (NO TP/SL BIAS)",
             font=("Segoe UI", 11, "bold"), fg=GOLD, bg=PANEL_BG
         ).pack(side=tk.LEFT)
 
         strat_val = self.strategy_var.get()
         tk.Label(
-            header, text=f"Strategy: {strat_val}", font=("Segoe UI", 9), fg=TEXT_MUTED, bg=PANEL_BG
+            header, text=f"Strategy: {strat_val} | Evaluation: Strictly Post-Close Forward Movement",
+            font=("Segoe UI", 9), fg=TEXT_MUTED, bg=PANEL_BG
         ).pack(side=tk.RIGHT)
 
         body = tk.Frame(modal, bg=DARK_BG, padx=12, pady=10)
         body.pack(fill=tk.BOTH, expand=True)
 
-        cols = ("ID", "Param 1", "Param 2", "BUY Signals", "BUY Fill%", "BUY Win%", "BUY Exp(R)", "SELL Signals", "SELL Fill%", "SELL Win%", "SELL Exp(R)", "Worst DD(R)")
+        cols = (
+            "ID", "Param 1", "Param 2",
+            "BUY N", "BUY Fwd(ATR)", "BUY MFE", "BUY MAE", "BUY EdgeRatio", "BUY Acc%",
+            "SELL N", "SELL Fwd(ATR)", "SELL MFE", "SELL MAE", "SELL EdgeRatio", "SELL Acc%", "Stability"
+        )
         tree = ttk.Treeview(body, columns=cols, show="headings", height=18)
         for c in cols:
             tree.heading(c, text=c)
-            width = 65 if "ID" in c or "Param" in c else 80
+            width = 55 if "ID" in c or "Param" in c or "N" in c else 68
             tree.column(c, width=width, anchor=tk.CENTER)
 
         scrollbar = ttk.Scrollbar(body, orient=tk.VERTICAL, command=tree.yview)
@@ -1894,7 +1899,7 @@ class TimeMachineProGUI:
         tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        status_lbl = tk.Label(modal, text="⏳ Menghitung 20 kombinasi sensitivitas...", font=("Segoe UI", 9), fg=CYAN, bg=DARK_BG)
+        status_lbl = tk.Label(modal, text="⏳ Menghitung forward edge murni (MFE, MAE, Forward Return)...", font=("Segoe UI", 9), fg=CYAN, bg=DARK_BG)
         status_lbl.pack(side=tk.BOTTOM, pady=6)
 
         def worker():
@@ -1911,10 +1916,8 @@ class TimeMachineProGUI:
             }.get(strat_val, "absorption")
 
             try:
-                spread = float(self.spread_var.get() or 0.25)
-                horizon = self._get_selected_horizon_bars()
-                res = combination_engine.evaluate_combination_monte_carlo(
-                    strategy_code, self.bars_data, side="both", replays=300, horizon_bars=horizon, spread=spread
+                res = combination_engine.evaluate_combination_forward_edge(
+                    strategy_code, self.bars_data, side="both", horizons=[3, 6, 12, 24, 48]
                 )
                 
                 def update_ui():
@@ -1928,19 +1931,22 @@ class TimeMachineProGUI:
                         b = r.get("buy") or {}
                         s = r.get("sell") or {}
 
-                        worst_dd = max(b.get("max_drawdown_r", 0.0), s.get("max_drawdown_r", 0.0))
+                        b_edge = b.get("edge_ratio", 0.0)
+                        s_edge = s.get("edge_ratio", 0.0)
+                        stab = (b.get("stability_score", 0.0) + s.get("stability_score", 0.0)) / 2.0
+
                         row = (
                             cid, str(p1_val), str(p2_val),
-                            b.get("signals", 0), f"{b.get('fill_rate', 0.0):.1f}%", f"{b.get('win_rate', 0.0):.1f}%", f"{b.get('expectancy_r', 0.0):+.2f}R",
-                            s.get("signals", 0), f"{s.get('fill_rate', 0.0):.1f}%", f"{s.get('win_rate', 0.0):.1f}%", f"{s.get('expectancy_r', 0.0):+.2f}R",
-                            f"-{worst_dd:.1f}R"
+                            b.get("signals", 0), f"{b.get('avg_forward_return', 0.0):+.2f}", f"{b.get('avg_mfe', 0.0):.2f}", f"{b.get('avg_mae', 0.0):.2f}", f"{b_edge:.2f}x", f"{b.get('directional_accuracy_pct', 0.0):.1f}%",
+                            s.get("signals", 0), f"{s.get('avg_forward_return', 0.0):+.2f}", f"{s.get('avg_mfe', 0.0):.2f}", f"{s.get('avg_mae', 0.0):.2f}", f"{s_edge:.2f}x", f"{s.get('directional_accuracy_pct', 0.0):.1f}%",
+                            f"{stab:.2f}"
                         )
                         tree.insert("", tk.END, values=row)
-                    status_lbl.configure(text=f"✅ Selesai mengevaluasi 20 konfigurasi {strategy_code.upper()} secara terpisah (BUY & SELL).", fg=GREEN)
+                    status_lbl.configure(text=f"✅ Selesai mengevaluasi FASE 1: 20 konfigurasi {strategy_code.upper()} murni forward edge tanpa TP/SL.", fg=GREEN)
 
                 self.root.after(0, update_ui)
             except Exception as e:
-                self.root.after(0, lambda err=e: status_lbl.configure(text=f"❌ Error kalkulasi: {err}", fg=RED))
+                self.root.after(0, lambda err=e: status_lbl.configure(text=f"❌ Error evaluasi Fase 1: {err}", fg=RED))
 
         threading.Thread(target=worker, daemon=True).start()
 
