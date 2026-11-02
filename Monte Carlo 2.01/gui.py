@@ -422,8 +422,10 @@ class TimeMachineProGUI:
         self.seasonality_var = tk.StringVar(value="Off (Default/Asli)")
         self.grid_lines_var = tk.StringVar(value="Dynamic Adaptive (Default)")
 
-        # TP/SL Variables
-        self.tpsl_mode_var = tk.StringVar(value="Auto Optimize")
+        # TP/SL Variables (Opsi Disable TP/SL dan Limit Orders - Default Disabled)
+        self.enable_tpsl_var = tk.BooleanVar(value=False)
+        self.enable_limits_var = tk.BooleanVar(value=False)
+        self.tpsl_mode_var = tk.StringVar(value="Disabled (Murni Sinyal)")
         self.point_size_var = tk.StringVar(value="0.01")
         self.fixed_tp_points_var = tk.StringVar(value="2000")
         self.fixed_sl_points_var = tk.StringVar(value="1000")
@@ -1535,26 +1537,30 @@ class TimeMachineProGUI:
                 canvas.create_text(x_px, h - pad_bottom + 12, text=t_lbl, fill=TEXT_MUTED, font=("Segoe UI", 8))
 
         # 8. Target, Stop, Entry lines & off-screen markers
-        y_tp = to_y(target)
-        if pad_top <= y_tp <= h - pad_bottom:
-            canvas.create_line(pad_left, y_tp, w - pad_right, y_tp, fill=GREEN, width=2, dash=(6, 4))
-            canvas.create_text(w - pad_right - 6, y_tp - 10, text=f"TP ${target:.2f} (+{plan.get('target_r', 0.0):.2f}R)", fill=GREEN, font=("Segoe UI", 9, "bold"), anchor="e")
-        elif y_tp < pad_top:
-            canvas.create_text(w - pad_right - 6, pad_top + 12, text=f"▲ TP ${target:.2f} (+{plan.get('target_r', 0.0):.1f}R)", fill=GREEN, font=("Segoe UI", 8, "bold"), anchor="e")
-        elif y_tp > h - pad_bottom:
-            canvas.create_text(w - pad_right - 6, h - pad_bottom - 12, text=f"▼ TP ${target:.2f} (+{plan.get('target_r', 0.0):.1f}R)", fill=GREEN, font=("Segoe UI", 8, "bold"), anchor="e")
+        # Jika TP/SL didisable (atau target/stop bernilai None / sama dengan entry), jangan gambar garis TP/SL
+        has_tpsl = getattr(self, "enable_tpsl_var", None) and self.enable_tpsl_var.get()
+        if target is not None and stop is not None and has_tpsl:
+            y_tp = to_y(target)
+            if pad_top <= y_tp <= h - pad_bottom:
+                canvas.create_line(pad_left, y_tp, w - pad_right, y_tp, fill=GREEN, width=2, dash=(6, 4))
+                canvas.create_text(w - pad_right - 6, y_tp - 10, text=f"TP ${target:.2f} (+{plan.get('target_r', 0.0):.2f}R)", fill=GREEN, font=("Segoe UI", 9, "bold"), anchor="e")
+            elif y_tp < pad_top:
+                canvas.create_text(w - pad_right - 6, pad_top + 12, text=f"▲ TP ${target:.2f} (+{plan.get('target_r', 0.0):.1f}R)", fill=GREEN, font=("Segoe UI", 8, "bold"), anchor="e")
+            elif y_tp > h - pad_bottom:
+                canvas.create_text(w - pad_right - 6, h - pad_bottom - 12, text=f"▼ TP ${target:.2f} (+{plan.get('target_r', 0.0):.1f}R)", fill=GREEN, font=("Segoe UI", 8, "bold"), anchor="e")
 
-        y_sl = to_y(stop)
-        if pad_top <= y_sl <= h - pad_bottom:
-            canvas.create_line(pad_left, y_sl, w - pad_right, y_sl, fill=RED, width=2, dash=(6, 4))
-            canvas.create_text(w - pad_right - 6, y_sl + 10, text=f"SL ${stop:.2f} (-1.0R)", fill=RED, font=("Segoe UI", 9, "bold"), anchor="e")
-        elif y_sl < pad_top:
-            canvas.create_text(w - pad_right - 6, pad_top + 24, text=f"▲ SL ${stop:.2f} (-1.0R)", fill=RED, font=("Segoe UI", 8, "bold"), anchor="e")
-        elif y_sl > h - pad_bottom:
-            canvas.create_text(w - pad_right - 6, h - pad_bottom - 24, text=f"▼ SL ${stop:.2f} (-1.0R)", fill=RED, font=("Segoe UI", 8, "bold"), anchor="e")
+            y_sl = to_y(stop)
+            if pad_top <= y_sl <= h - pad_bottom:
+                canvas.create_line(pad_left, y_sl, w - pad_right, y_sl, fill=RED, width=2, dash=(6, 4))
+                canvas.create_text(w - pad_right - 6, y_sl + 10, text=f"SL ${stop:.2f} (-1.0R)", fill=RED, font=("Segoe UI", 9, "bold"), anchor="e")
+            elif y_sl < pad_top:
+                canvas.create_text(w - pad_right - 6, pad_top + 24, text=f"▲ SL ${stop:.2f} (-1.0R)", fill=RED, font=("Segoe UI", 8, "bold"), anchor="e")
+            elif y_sl > h - pad_bottom:
+                canvas.create_text(w - pad_right - 6, h - pad_bottom - 24, text=f"▼ SL ${stop:.2f} (-1.0R)", fill=RED, font=("Segoe UI", 8, "bold"), anchor="e")
 
         y_en = to_y(entry)
-        limit_lbl = "Buy Limit" if is_buy else "Sell Limit"
+        has_limits = getattr(self, "enable_limits_var", None) and self.enable_limits_var.get()
+        limit_lbl = ("Buy Limit" if is_buy else "Sell Limit") if has_limits else ("BUY SIGNAL" if is_buy else "SELL SIGNAL")
         tag_str = f" [{plan['setup_tag']}]" if plan.get("setup_tag") else ""
         if pad_top <= y_en <= h - pad_bottom:
             canvas.create_line(pad_left, y_en, w - pad_right, y_en, fill="#ffffff", width=1, dash=(3, 3))
@@ -1795,10 +1801,26 @@ class TimeMachineProGUI:
         tab_tpsl = tk.Frame(notebook, bg=PANEL_BG, padx=14, pady=12)
         notebook.add(tab_tpsl, text=" 🎯 TP / SL Search ")
 
+        chk_tpsl = tk.Checkbutton(
+            tab_tpsl, text="Aktifkan Proyeksi TP / SL (Default: Dinonaktifkan)",
+            variable=self.enable_tpsl_var, font=("Segoe UI", 9, "bold"),
+            fg=GOLD, bg=PANEL_BG, selectcolor=CARD_BG, activebackground=PANEL_BG, activeforeground=GOLD,
+            command=lambda: [self._draw_dual_charts(), self.execute_auto_scan() if self.active_mode == "auto" else None]
+        )
+        chk_tpsl.pack(anchor="w", pady=(0, 6))
+
+        chk_limits = tk.Checkbutton(
+            tab_tpsl, text="Gunakan Pending Limit Offset (Uncheck: Sinyal Market Close)",
+            variable=self.enable_limits_var, font=("Segoe UI", 8),
+            fg=TEXT_MUTED, bg=PANEL_BG, selectcolor=CARD_BG, activebackground=PANEL_BG, activeforeground=TEXT_PRIMARY,
+            command=lambda: [self._draw_dual_charts(), self.execute_auto_scan() if self.active_mode == "auto" else None]
+        )
+        chk_limits.pack(anchor="w", pady=(0, 10))
+
         tk.Label(tab_tpsl, text="DUAL AUTO TP / SL METHOD", font=("Segoe UI", 8, "bold"), fg=GOLD, bg=PANEL_BG).pack(anchor="w", pady=(0, 4))
         self.tpsl_mode_combo = ttk.Combobox(
             tab_tpsl, textvariable=self.tpsl_mode_var,
-            values=["Auto Optimize", "Fixed TP/SL", "TP/SL Range", "Risk Reward"],
+            values=["Disabled (Murni Sinyal)", "Auto Optimize", "Fixed TP/SL", "TP/SL Range", "Risk Reward"],
             state="readonly", font=("Segoe UI", 8)
         )
         self.tpsl_mode_combo.pack(fill=tk.X, pady=(0, 10))
