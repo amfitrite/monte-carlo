@@ -1,5 +1,5 @@
 $desktop = [Environment]::GetFolderPath("Desktop")
-$shortcutPath = Join-Path $desktop "XAUUSD Time Machine.lnk"
+$shortcutPath = Join-Path $desktop "Monte Carlo.lnk"
 $wsh = New-Object -ComObject WScript.Shell
 $shortcut = $wsh.CreateShortcut($shortcutPath)
 
@@ -35,7 +35,7 @@ if (-not (Test-Path $iconPath)) {
     $iconPath = Join-Path $baseDir "assets\gold_icon.ico"
 }
 $shortcut.IconLocation = "$iconPath,0"
-$shortcut.Description = "Monte Carlo Gold ($versionName) - Statistical Odds Simulation Engine"
+$shortcut.Description = "Monte Carlo ($versionName) - Statistical Odds Simulation Engine"
 $shortcut.Save()
 
-Write-Host "Desktop shortcut successfully updated to point to: $targetDir ($versionName)"
+Write-Host "Desktop shortcut created successfully at: $shortcutPath -> $targetDir ($versionName)"

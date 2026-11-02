@@ -1,10 +1,10 @@
 $desktop = [Environment]::GetFolderPath("Desktop")
-$shortcutPath = Join-Path $desktop "XAUUSD Time Machine.lnk"
+$shortcutPath = Join-Path $desktop "Monte Carlo.lnk"
 $wsh = New-Object -ComObject WScript.Shell
 $shortcut = $wsh.CreateShortcut($shortcutPath)
 
-# Otomatis deteksi folder versi terbaru (misal: Monte Carlo 2.01, Monte Carlo 2.02, dst)
-$baseDir = "d:\Time Machine"
+# Otomatis deteksi folder versi terbaru di D:\Monte Carlo
+$baseDir = "D:\Monte Carlo"
 $latestVersionDir = Get-ChildItem -Path $baseDir -Directory -Filter "Monte Carlo 2*" |
     Sort-Object Name -Descending |
     Select-Object -First 1
@@ -35,7 +35,7 @@ if (-not (Test-Path $iconPath)) {
     $iconPath = Join-Path $baseDir "assets\gold_icon.ico"
 }
 $shortcut.IconLocation = "$iconPath,0"
-$shortcut.Description = "XAUUSD Time Machine ($versionName) - Statistical Odds Simulation Engine for Gold"
+$shortcut.Description = "Monte Carlo ($versionName) - Statistical Odds Simulation Engine"
 $shortcut.Save()
 
-Write-Host "Desktop shortcut successfully updated to point to: $targetDir ($versionName)"
+Write-Host "Desktop shortcut created successfully at: $shortcutPath -> $targetDir ($versionName)"
